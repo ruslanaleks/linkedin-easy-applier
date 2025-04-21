@@ -1,0 +1,58 @@
+{
+    "manifest_version": 3,
+    "name": "LinkedIn Auto Apply",
+    "version": "1.0",
+    "description": "Автоматически выполняет процесс подачи заявки (Easy Apply) на LinkedIn.",
+    "permissions": [
+        "activeTab",
+        "scripting",
+        "storage",
+        "notifications"
+    ],
+    "background": {
+        "service_worker": "background.js"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "https://www.linkedin.com/jobs/*"
+            ],
+            "js": [
+                "utils.js",
+                "actions/openModal.js",
+                "actions/passDefaultSteps.js",
+                "actions/markTopChoice.js",
+                "actions/handleAdditionalSteps.js",
+                "actions/passReviewStep.js",
+                "actions/handleApplicationSent.js",
+                "actions.js",
+                "ui.js",
+                "content.js"
+            ],
+            "run_at": "document_end"
+        }
+    ],
+    "web_accessible_resources": [
+        {
+            "resources": [
+                "utils.js",
+                "actions.js",
+                "actions/openModal.js",
+                "actions/passDefaultSteps.js",
+                "actions/markTopChoice.js",
+                "actions/handleAdditionalSteps.js",
+                "actions/passReviewStep.js",
+                "actions/handleApplicationSent.js",
+                "ui.js"
+            ],
+            "matches": [
+                "https://www.linkedin.com/*"
+            ]
+        }
+    ],
+    "icons": {
+        "16": "icon16.png",
+        "48": "icon48.png",
+        "128": "icon128.png"
+    }
+}
