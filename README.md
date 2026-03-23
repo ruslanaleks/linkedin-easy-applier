@@ -59,14 +59,57 @@ A Chrome extension that automates the "Easy Apply" process on LinkedIn job listi
 ### Configuring Settings
 
 1. Click the "Settings" button to open the settings panel
-2. Enter job keywords (comma-separated) to help target specific types of positions
+2. Configure the following fields:
+   - **Job Keywords**: Comma-separated list used for filtering/logging
+   - **Phone Number**: Used to autofill the Contact info phone field
+   - **English Level**: Used to auto-select English proficiency in additional steps
+   - **AWS Experience**: Short summary used to fill AWS/cloud-related questions
+   - **AWS Years of Experience**: Number used for AWS years questions (ES/EN)
+   - **Java Years of Experience**: Number used for Java years questions (ES/EN)
+   - **Custom English Level Text**: Optional localized text (e.g., "Profesional")
+   - **Hispanic/Latino**: Demographic selection
+   - **Languages (JSON)**: List of language proficiencies used to answer generic language questions. Example:
+```
+[
+  { "name": "English", "level": "Profesional" },
+  { "name": "Spanish", "level": "Nativo" }
+]
+```
+   - **User Profile (JSON)**: Full profile object used to answer questions (phone, languages, experience). Minimal example:
+```
+{
+  "phone": "+1 555 123 4567",
+  "languages": [
+    { "name": "English", "level": "Profesional" }
+  ],
+  "experience": [
+    { "technology": "aws", "years": 3 },
+    { "technology": "java", "years": 2 }
+  ],
+  "demographics": { "hispanic": "Yes" }
+}
+```
 3. Click "Save Settings" to apply your changes
+
+Notes:
+- The extension stores settings locally in your browser (Chrome storage).
+- If a phone field isn’t filled on some postings, it may be a custom component; please open DevTools, copy the field’s HTML, and open an issue.
 
 ## Troubleshooting
 
 - **Extension Not Working**: Make sure you're on a LinkedIn job page with the "Easy Apply" option
 - **Application Process Stops**: Some jobs may have custom questions that require manual input
 - **Button Not Appearing**: Refresh the page or check if you're on a supported LinkedIn page
+- **Phone not autofilled**: Ensure your phone is set in Settings. The extension looks for `type=tel`, and inputs labeled with “phone”/“mobile”. Some forms use masked inputs which may need special handling.
+
+### Optional: Set Phone via Console Bridge
+If DevTools console is not in the extension context, you can set your phone via a message bridge:
+```javascript
+window.postMessage({
+  type: "LINKEDIN_APPLIER_SET_PHONE",
+  payload: { phone: "+1 555 123 4567" }
+}, "*");
+```
 
 ## Privacy & Security
 
