@@ -41,6 +41,7 @@
                 "utils.js",
                 "feed/feedScraper.js",
                 "feed/feedEngagement.js",
+                "feed/feedAI.js",
                 "feed/feedUI.js",
                 "feed/feedContent.js"
             ],
@@ -61,6 +62,7 @@
                 "ui.js",
                 "feed/feedScraper.js",
                 "feed/feedEngagement.js",
+                "feed/feedAI.js",
                 "feed/feedUI.js",
                 "feed/feedContent.js"
             ],

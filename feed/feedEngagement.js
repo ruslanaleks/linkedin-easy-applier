@@ -1003,16 +1003,37 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
   }
 
   /**
-   * Generate a relevant comment for a post using the comment library
+   * Generate a relevant comment for a post using AI or comment library
    * @param {Object} post - Parsed post data
-   * @returns {string|null}
+   * @returns {Promise<string|null>}
    */
-  function generateComment(post) {
+  async function generateComment(post) {
     try {
       // User-configured comments (highest priority)
       const comments = window.linkedInAutoApply?.settings?.autoComments || [];
       if (comments && comments.length > 0) {
         return comments[Math.floor(Math.random() * comments.length)];
+      }
+
+      // Try AI generation if enabled
+      const aiSettings = window.linkedInAutoApply?.feedAI ? 
+        await window.linkedInAutoApply.feedAI.loadAPISettings() : null;
+      
+      if (aiSettings?.enableAI) {
+        try {
+          console.log('[FeedEngagement] Using AI to generate comment...');
+          const aiComment = await window.linkedInAutoApply.feedAI.generateAIComment(post, {
+            analyzeImage: aiSettings.analyzeImages !== false,
+          });
+          
+          if (aiComment) {
+            console.log('[FeedEngagement] ✓ AI comment generated:', aiComment.slice(0, 80) + '...');
+            return aiComment;
+          }
+        } catch (aiErr) {
+          console.warn('[FeedEngagement] AI comment failed, falling back to library:', aiErr.message);
+          // Continue to library fallback
+        }
       }
 
       // Detect post type
@@ -1024,7 +1045,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       // Select random comment
       const comment = typeComments[Math.floor(Math.random() * typeComments.length)];
 
-      console.log(`[FeedEngagement] Generated ${postType} comment: "${comment}"`);
+      console.log(`[FeedEngagement] Generated ${postType} comment (library): "${comment}"`);
       return comment;
 
     } catch (err) {
@@ -1285,7 +1306,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           });
 
           if (prob <= CONFIG.ENGAGEMENT_PROBABILITY.comment) {
-            const comment = generateComment(post);
+            console.log('[FeedEngagement] Generating comment...');
+            const comment = await generateComment(post);
             console.log('[FeedEngagement] Generated comment:', comment);
 
             if (comment) {

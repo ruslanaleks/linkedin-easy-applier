@@ -611,6 +611,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     closePanel();
 
     const settings = await getEngagementSettings();
+    const aiSettings = await getAISettings();
 
     analysisPanel = document.createElement('div');
     analysisPanel.id = 'feed-settings-panel';
@@ -680,10 +681,63 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           min="0" max="20" style="margin-left: 10px; padding: 4px 8px; width: 60px;">
       </label>
 
+      <h3 style="margin: 20px 0 12px 0; color: #333; font-size: 15px;">🤖 AI Comments (Qwen)</h3>
+      <div style="padding: 12px; background: #e8f4fd; border-radius: 6px; margin-bottom: 15px; font-size: 13px;">
+        <div style="margin-bottom: 8px;">
+          <strong>AI-генерация комментариев</strong> на основе контекста поста с использованием Qwen 3.5+
+        </div>
+        <div style="color: #666; font-size: 12px;">
+          🔹 Анализирует текст поста, хэштеги, медиа<br>
+          🔹 Пишет уникальные комментарии на языке поста<br>
+          🔹 Учитывает профессиональный контекст
+        </div>
+      </div>
+
+      <label style="display: block; margin: 10px 0;">
+        <input type="checkbox" id="ai-enable" ${aiSettings?.enableAI ? 'checked' : ''}>
+        <strong>Enable AI-generated comments</strong> (requires API key)
+      </label>
+
+      <div style="margin-left: 20px; margin-top: 10px;">
+        <label style="display: block; margin: 8px 0;">
+          API Provider:
+          <select id="ai-provider" style="margin-left: 10px; padding: 4px 8px;">
+            <option value="dashscope" ${aiSettings?.provider === 'dashscope' ? 'selected' : ''}>Alibaba DashScope (Official)</option>
+            <option value="openrouter" ${aiSettings?.provider === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
+            <option value="local" ${aiSettings?.provider === 'local' ? 'selected' : ''}>Local (Ollama/vLLM)</option>
+          </select>
+        </label>
+
+        <label style="display: block; margin: 8px 0;">
+          API Key:
+          <input type="password" id="ai-apikey" value="${aiSettings?.apiKey || ''}"
+            placeholder="sk-..." style="margin-left: 10px; padding: 4px 8px; width: 200px;">
+        </label>
+
+        <label style="display: block; margin: 8px 0;">
+          Model:
+          <select id="ai-model" style="margin-left: 10px; padding: 4px 8px;">
+            ${getModelOptions(aiSettings?.provider, aiSettings?.model)}
+          </select>
+        </label>
+
+        <label style="display: block; margin: 8px 0;">
+          <input type="checkbox" id="ai-analyze-images" ${aiSettings?.analyzeImages !== false ? 'checked' : ''}>
+          Analyze images in posts (uses Qwen-VL)
+        </label>
+
+        <button id="ai-test-btn" style="
+          margin-top: 10px; padding: 6px 12px; background: #6c757d; color: #fff;
+          border: none; border-radius: 4px; cursor: pointer; font-size: 12px;
+        ">🧪 Test Connection</button>
+        
+        <div id="ai-test-result" style="margin-top: 8px; font-size: 12px;"></div>
+      </div>
+
       <h3 style="margin: 20px 0 12px 0; color: #333; font-size: 15px;">Rate Limit Status</h3>
       <div id="settings-rate-status"></div>
 
-      <div style="margin-top: 20px; display: flex; gap: 10px;">
+      <div style="margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
         <button id="save-settings-btn" style="
           padding: 10px 20px; background: #0073b1; color: #fff;
           border: none; border-radius: 4px; cursor: pointer; font-size: 14px;
@@ -704,6 +758,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     // Event listeners
     document.getElementById('save-settings-btn').addEventListener('click', saveSettings);
     document.getElementById('reset-limits-btn').addEventListener('click', resetLimits);
+    document.getElementById('ai-test-btn')?.addEventListener('click', testAIConnection);
+    document.getElementById('ai-provider')?.addEventListener('change', onProviderChange);
   }
 
   /**
@@ -741,8 +797,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       maxComments: parseInt(document.getElementById('setting-max-comments')?.value || '5', 10),
     };
 
+    // Save AI settings
+    await saveAISettings();
+
     await chrome.storage.local.set({ feedEngagementSettings: settings });
-    alert('✅ Settings saved!');
+    alert('✅ Settings saved! AI comments will be generated using Qwen when enabled.');
     closePanel();
   }
 
@@ -755,6 +814,108 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       updateSettingsRateStatus();
       alert('✅ Rate limits reset!');
     }
+  }
+
+  /**
+   * Get AI settings from storage
+   */
+  async function getAISettings() {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage) {
+        return null;
+      }
+      const data = await chrome.storage.local.get('feedAISettings');
+      return data?.feedAISettings || getDefaultAISettings();
+    } catch (err) {
+      console.warn('[FeedUI] Failed to load AI settings:', err.message);
+      return getDefaultAISettings();
+    }
+  }
+
+  /**
+   * Get default AI settings
+   */
+  function getDefaultAISettings() {
+    return {
+      enableAI: false,
+      provider: 'dashscope',
+      apiKey: '',
+      model: 'qwen-3.5-72b',
+      analyzeImages: true,
+      endpoint: '',
+    };
+  }
+
+  /**
+   * Get model options HTML for provider
+   */
+  function getModelOptions(provider, selectedModel) {
+    if (!window.linkedInAutoApply?.feedAI) {
+      return '<option value="qwen-3.5-72b">Qwen 3.5 72B</option>';
+    }
+    
+    const models = window.linkedInAutoApply.feedAI.getAvailableModels(provider || 'dashscope');
+    return models.map(m => 
+      `<option value="${m.value}" ${m.value === selectedModel ? 'selected' : ''}>${m.label}</option>`
+    ).join('');
+  }
+
+  /**
+   * Test AI connection
+   */
+  async function testAIConnection() {
+    const resultEl = document.getElementById('ai-test-result');
+    if (!resultEl) return;
+
+    const provider = document.getElementById('ai-provider')?.value || 'dashscope';
+    const apiKey = document.getElementById('ai-apikey')?.value || '';
+    const model = document.getElementById('ai-model')?.value || 'qwen-3.5-72b';
+
+    resultEl.style.color = '#666';
+    resultEl.innerText = '🔄 Testing connection...';
+
+    const settings = {
+      provider,
+      apiKey,
+      model,
+      enableAI: true,
+    };
+
+    const result = await window.linkedInAutoApply.feedAI.testAPIConnection(settings);
+    
+    resultEl.style.color = result.success ? '#28a745' : '#dc3545';
+    resultEl.innerText = result.success ? '✅ ' + result.message : '❌ ' + result.message;
+  }
+
+  /**
+   * Handle provider change
+   */
+  function onProviderChange() {
+    const provider = document.getElementById('ai-provider')?.value || 'dashscope';
+    const modelSelect = document.getElementById('ai-model');
+    if (modelSelect) {
+      modelSelect.innerHTML = getModelOptions(provider, null);
+    }
+  }
+
+  /**
+   * Save AI settings
+   */
+  async function saveAISettings() {
+    const settings = {
+      enableAI: document.getElementById('ai-enable')?.checked || false,
+      provider: document.getElementById('ai-provider')?.value || 'dashscope',
+      apiKey: document.getElementById('ai-apikey')?.value || '',
+      model: document.getElementById('ai-model')?.value || 'qwen-3.5-72b',
+      analyzeImages: document.getElementById('ai-analyze-images')?.checked || true,
+      endpoint: '',
+    };
+
+    if (typeof chrome !== 'undefined' && chrome.storage) {
+      await chrome.storage.local.set({ feedAISettings: settings });
+    }
+    
+    return settings;
   }
 
   // ── Utility Functions ──────────────────────────────────────────────────
