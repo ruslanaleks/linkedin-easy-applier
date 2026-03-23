@@ -32,7 +32,32 @@ window.linkedInAutoApply.passDefaultSteps = () => {
       document.querySelector("form .ph5 .t-16.t-bold").innerText
     )
   ) {
-    document.querySelector(".artdeco-button--primary").click();
+    // Try to autofill phone number on Contact info step before proceeding
+    try {
+      const headerText = document.querySelector("form .ph5 .t-16.t-bold")?.innerText || "";
+      if (/contact info|kontaktinfo|dane kontaktowe|informazioni di contatto|información de contacto|contactgegevens|coordonnée/i.test(headerText)) {
+        const modal = document.querySelector(
+          ".artdeco-modal__content.jobs-easy-apply-modal__content.p0.ember-view"
+        );
+        const phoneFromSettings = window.linkedInAutoApply?.settings?.phoneNumber || "";
+        if (modal && phoneFromSettings) {
+          const candidates = window.linkedInAutoApply.utils.findPhoneInputs(modal);
+          for (const el of candidates) {
+            if (!el.value || !el.value.trim()) {
+              console.log("Autofilling phone (default step) into:", el);
+              window.linkedInAutoApply.utils.setFormControlValue(el, phoneFromSettings);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Phone autofill on default step failed:", e);
+    }
+
+    // Delay click slightly so value settles
+    setTimeout(() => {
+      document.querySelector(".artdeco-button--primary")?.click();
+    }, 150);
     console.log("Passing default steps... DONE");
     return true;
   }

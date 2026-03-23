@@ -53,6 +53,23 @@ function initialize() {
 
     console.log("LinkedIn Auto Apply extension initialized!");
   });
+
+  // Bridge: allow page context to set phone via postMessage
+  try {
+    window.addEventListener("message", (event) => {
+      if (!event || !event.data || event.source !== window) return;
+      const { type, payload } = event.data || {};
+      if (type === "LINKEDIN_APPLIER_SET_PHONE" && payload && typeof payload.phone === "string") {
+        chrome.storage.local.set({ phoneNumber: payload.phone }, () => {
+          // Refresh in-memory settings
+          window.linkedInAutoApply.loadSettings();
+          console.log("Phone number saved via bridge.");
+        });
+      }
+    });
+  } catch (e) {
+    console.warn("Bridge init failed", e);
+  }
 }
 
 // Initialize the extension when the page is ready

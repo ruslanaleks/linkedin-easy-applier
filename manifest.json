@@ -30,6 +30,21 @@
                 "content.js"
             ],
             "run_at": "document_end"
+        },
+        {
+            "matches": [
+                "https://www.linkedin.com/feed/*",
+                "https://www.linkedin.com/feed",
+                "https://www.linkedin.com/"
+            ],
+            "js": [
+                "utils.js",
+                "feed/feedScraper.js",
+                "feed/feedEngagement.js",
+                "feed/feedUI.js",
+                "feed/feedContent.js"
+            ],
+            "run_at": "document_end"
         }
     ],
     "web_accessible_resources": [
@@ -43,7 +58,11 @@
                 "actions/handleAdditionalSteps.js",
                 "actions/passReviewStep.js",
                 "actions/handleApplicationSent.js",
-                "ui.js"
+                "ui.js",
+                "feed/feedScraper.js",
+                "feed/feedEngagement.js",
+                "feed/feedUI.js",
+                "feed/feedContent.js"
             ],
             "matches": [
                 "https://www.linkedin.com/*"

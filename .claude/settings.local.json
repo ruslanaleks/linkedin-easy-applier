@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dd 'if=c:/Users/Михаил/Documents/Feed _ LinkedIn.html' bs=1 skip=1997 count=10000)",
+      "Bash(grep -oP 'aria-label=\"\"\"\"[^\"\"\"\"]{5,80}\"\"\"\"' \"c:/Users/Михаил/Documents/Feed _ LinkedIn.html\")",
+      "Bash(grep -oP '.{0,300}Elton Zakiyev Verified.{0,1000}' \"c:/Users/Михаил/Documents/Feed _ LinkedIn.html\")",
+      "Bash(grep -oP '.{0,200}expandable-text-box.{0,500}' \"c:/Users/Михаил/Documents/Feed _ LinkedIn.html\")",
+      "Bash(grep -oP '.{0,2000}expandable-text-box.{0,200}' \"c:/Users/Михаил/Documents/Feed _ LinkedIn.html\")",
+      "Bash(grep -oP '.{0,100}\\(ago|hour|day|week|month|\\\\d+[hmdw]\\)[^\"\"\"\"<]{0,50}' \"c:/Users/Михаил/Documents/Feed _ LinkedIn.html\")",
+      "Bash(grep -oP '.{0,300}Elton Zakiyev.{0,300}' \"c:/Users/Михаил/Documents/Feed _ LinkedIn.html\")",
+      "Bash(grep -oP '.{0,100}aria-label=\"\"\"\"Open control menu for post by[^\"\"\"\"]*\"\"\"\"' \"c:/Users/Михаил/Documents/Feed _ LinkedIn.html\")",
+      "Bash(grep -oP '.{0,100}\\(1[0-9]h|[0-9]h|[0-9]d|1[0-9]d|[0-9]w|[0-9]mo\\).{0,100}' \"c:/Users/Михаил/Documents/Feed _ LinkedIn.html\")",
+      "Bash(grep -oP '.{0,300}>1h<.{0,300}' \"c:/Users/Михаил/Documents/Feed _ LinkedIn.html\")",
+      "Bash(node --check \"C:/linkedin-applier/linkedin-applier/feed/feedScraper.js\")",
+      "Bash(node --check \"C:/linkedin-applier/linkedin-applier/feed/feedEngagement.js\")",
+      "Bash(node --check \"C:/linkedin-applier/linkedin-applier/feed/feedUI.js\")",
+      "Bash(node --check \"C:/linkedin-applier/linkedin-applier/feed/feedContent.js\")",
+      "Bash(node --check \"C:/linkedin-applier/linkedin-applier/background.js\")",
+      "Bash(node -e \"JSON.parse\\(require\\(''fs''\\).readFileSync\\(''C:/linkedin-applier/linkedin-applier/manifest.json'',''utf8''\\)\\); console.log\\(''All OK''\\)\")"
+    ]
+  }
+}
