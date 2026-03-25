@@ -264,9 +264,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         likeHiring: settings.likeHiring,
         likeKeywordMatches: settings.likeKeywordMatches,
         enableComments: settings.enableComments,
+        enableReplies: settings.enableReplies,
         enableFollows: settings.enableFollows,
         maxLikes: settings.maxLikes,
         maxComments: settings.maxComments,
+        maxReplies: settings.maxReplies,
         onProgress: (progress) => {
           if (progress.phase === 'scraping') {
             updateProgress(
@@ -278,7 +280,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
             const rateStatus = progress.rateLimits;
             updateProgress(
               `💬 Processing ${progress.currentPost}/${progress.totalPosts}... ` +
-              `❤️ ${progress.stats.liked} | 💬 ${progress.stats.commented} | ➕ ${progress.stats.followed}`
+              `❤️ ${progress.stats.liked} | 💬 ${progress.stats.commented} | 🔁 ${progress.stats.replied} | ➕ ${progress.stats.followed}`
             );
             updateProgressBar((progress.currentPost / progress.totalPosts) * 100);
             updateRateLimitStatus(rateStatus);
@@ -288,7 +290,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
       updateProgress(
         `✅ Complete! Liked: ${stats.liked}, Commented: ${stats.commented}, ` +
-        `Followed: ${stats.followed}, Skipped: ${stats.skipped}`
+        `Replied: ${stats.replied}, Followed: ${stats.followed}, Skipped: ${stats.skipped}`
       );
       updateProgressBar(100);
     } catch (err) {
@@ -311,9 +313,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       likeHiring: true,
       likeKeywordMatches: true,
       enableComments: true, // Enable comments by default (now has library)
+      enableReplies: false,
       enableFollows: false,
       maxLikes: 20,
       maxComments: 10,
+      maxReplies: 3,
     };
 
     try {
@@ -640,111 +644,132 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
     // Engagement options
     body.innerHTML = `
-      <h3 style="margin: 0 0 12px 0; color: #333; font-size: 15px;">Engagement Options</h3>
+      <h3 style="margin: 0 0 14px 0; color: #333; font-size: 17px;">Engagement Options</h3>
 
-      <label style="display: block; margin: 10px 0;">
-        <input type="checkbox" id="setting-like-all" ${settings.likeAll ? 'checked' : ''}>
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        <input type="checkbox" id="setting-like-all" ${settings.likeAll ? 'checked' : ''}
+          style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
         Like all posts (recommended for maximum reach)
       </label>
 
-      <label style="display: block; margin: 10px 0;">
-        <input type="checkbox" id="setting-like-hiring" ${settings.likeHiring ? 'checked' : ''}>
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        <input type="checkbox" id="setting-like-hiring" ${settings.likeHiring ? 'checked' : ''}
+          style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
         Like hiring posts (extra engagement with job posts)
       </label>
 
-      <label style="display: block; margin: 10px 0;">
-        <input type="checkbox" id="setting-like-keyword" ${settings.likeKeywordMatches ? 'checked' : ''}>
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        <input type="checkbox" id="setting-like-keyword" ${settings.likeKeywordMatches ? 'checked' : ''}
+          style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
         Like keyword-matching posts (based on your job keywords)
       </label>
 
-      <label style="display: block; margin: 10px 0;">
-        <input type="checkbox" id="setting-enable-comments" ${settings.enableComments ? 'checked' : ''}>
-        Enable auto-comments (uses smart comment library 📝)
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        <input type="checkbox" id="setting-enable-comments" ${settings.enableComments ? 'checked' : ''}
+          style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
+        Enable auto-comments 📝
       </label>
 
-      <label style="display: block; margin: 10px 0;">
-        <input type="checkbox" id="setting-enable-follows" ${settings.enableFollows ? 'checked' : ''}>
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        <input type="checkbox" id="setting-enable-replies" ${settings.enableReplies ? 'checked' : ''}
+          style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
+        Enable auto-replies to comments 💬 (AI-generated via Grok)
+      </label>
+
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        <input type="checkbox" id="setting-enable-follows" ${settings.enableFollows ? 'checked' : ''}
+          style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
         Follow authors of engaging posts
       </label>
 
-      <h3 style="margin: 20px 0 12px 0; color: #333; font-size: 15px;">Session Limits</h3>
+      <h3 style="margin: 22px 0 14px 0; color: #333; font-size: 17px;">Session Limits</h3>
 
-      <label style="display: block; margin: 10px 0;">
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
         Max likes per session:
         <input type="number" id="setting-max-likes" value="${settings.maxLikes}"
-          min="1" max="50" style="margin-left: 10px; padding: 4px 8px; width: 60px;">
+          min="1" max="50" style="margin-left: 10px; padding: 6px 10px; width: 70px; font-size: 15px;">
       </label>
 
-      <label style="display: block; margin: 10px 0;">
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
         Max comments per session:
         <input type="number" id="setting-max-comments" value="${settings.maxComments}"
-          min="0" max="20" style="margin-left: 10px; padding: 4px 8px; width: 60px;">
+          min="0" max="20" style="margin-left: 10px; padding: 6px 10px; width: 70px; font-size: 15px;">
       </label>
 
-      <h3 style="margin: 20px 0 12px 0; color: #333; font-size: 15px;">🤖 AI Comments (Qwen)</h3>
-      <div style="padding: 12px; background: #e8f4fd; border-radius: 6px; margin-bottom: 15px; font-size: 13px;">
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        Max replies per session:
+        <input type="number" id="setting-max-replies" value="${settings.maxReplies}"
+          min="0" max="10" style="margin-left: 10px; padding: 6px 10px; width: 70px; font-size: 15px;">
+      </label>
+
+      <h3 style="margin: 22px 0 14px 0; color: #333; font-size: 17px;">🤖 AI Comments (xAI Grok)</h3>
+      <div style="padding: 14px; background: #e8f4fd; border-radius: 6px; margin-bottom: 16px; font-size: 15px; line-height: 1.6;">
         <div style="margin-bottom: 8px;">
-          <strong>AI-генерация комментариев</strong> на основе контекста поста с использованием Qwen 3.5+
+          <strong>AI-generated comments</strong> — each comment is unique, based on the post context
         </div>
-        <div style="color: #666; font-size: 12px;">
-          🔹 Анализирует текст поста, хэштеги, медиа<br>
-          🔹 Пишет уникальные комментарии на языке поста<br>
-          🔹 Учитывает профессиональный контекст
+        <div style="color: #555; font-size: 14px; line-height: 1.6;">
+          🔹 Reads post text, hashtags, engagement metrics<br>
+          🔹 Analyzes images in the post (vision)<br>
+          🔹 Generates comment in the post's language<br>
+          🔹 Default model: xAI Grok 4 Fast ⚡
         </div>
       </div>
 
-      <label style="display: block; margin: 10px 0;">
-        <input type="checkbox" id="ai-enable" ${aiSettings?.enableAI ? 'checked' : ''}>
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        <input type="checkbox" id="ai-enable" ${aiSettings?.enableAI !== false ? 'checked' : ''}
+          style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
         <strong>Enable AI-generated comments</strong> (requires API key)
       </label>
 
-      <div style="margin-left: 20px; margin-top: 10px;">
-        <label style="display: block; margin: 8px 0;">
+      <div style="margin-left: 24px; margin-top: 12px;">
+        <label style="display: block; margin: 10px 0; font-size: 15px; line-height: 1.5;">
           API Provider:
-          <select id="ai-provider" style="margin-left: 10px; padding: 4px 8px;">
-            <option value="dashscope" ${aiSettings?.provider === 'dashscope' ? 'selected' : ''}>Alibaba DashScope (Official)</option>
-            <option value="openrouter" ${aiSettings?.provider === 'openrouter' ? 'selected' : ''}>OpenRouter</option>
+          <select id="ai-provider" style="margin-left: 10px; padding: 6px 10px; font-size: 15px;">
+            <option value="xai" ${aiSettings?.provider === 'xai' ? 'selected' : ''}>xAI Grok (Official) ⚡</option>
+            <option value="dashscope" ${aiSettings?.provider === 'dashscope' ? 'selected' : ''}>Alibaba DashScope (Qwen)</option>
+            <option value="openrouter" ${aiSettings?.provider === 'openrouter' ? 'selected' : ''}>OpenRouter (Qwen + Grok)</option>
             <option value="local" ${aiSettings?.provider === 'local' ? 'selected' : ''}>Local (Ollama/vLLM)</option>
           </select>
         </label>
 
-        <label style="display: block; margin: 8px 0;">
+        <label style="display: block; margin: 10px 0; font-size: 15px; line-height: 1.5;">
           API Key:
           <input type="password" id="ai-apikey" value="${aiSettings?.apiKey || ''}"
-            placeholder="sk-..." style="margin-left: 10px; padding: 4px 8px; width: 200px;">
+            placeholder="xai-..." style="margin-left: 10px; padding: 6px 10px; width: 240px; font-size: 15px;">
         </label>
 
-        <label style="display: block; margin: 8px 0;">
+        <label style="display: block; margin: 10px 0; font-size: 15px; line-height: 1.5;">
           Model:
-          <select id="ai-model" style="margin-left: 10px; padding: 4px 8px;">
+          <select id="ai-model" style="margin-left: 10px; padding: 6px 10px; font-size: 15px;">
             ${getModelOptions(aiSettings?.provider, aiSettings?.model)}
           </select>
         </label>
 
-        <label style="display: block; margin: 8px 0;">
-          <input type="checkbox" id="ai-analyze-images" ${aiSettings?.analyzeImages !== false ? 'checked' : ''}>
-          Analyze images in posts (uses Qwen-VL)
+        <label style="display: block; margin: 10px 0; font-size: 15px; line-height: 1.5;">
+          <input type="checkbox" id="ai-analyze-images" ${aiSettings?.analyzeImages !== false ? 'checked' : ''}
+            style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
+          Analyze images in posts (vision model)
         </label>
 
         <button id="ai-test-btn" style="
-          margin-top: 10px; padding: 6px 12px; background: #6c757d; color: #fff;
-          border: none; border-radius: 4px; cursor: pointer; font-size: 12px;
+          margin-top: 12px; padding: 8px 16px; background: #6c757d; color: #fff;
+          border: none; border-radius: 4px; cursor: pointer; font-size: 14px;
         ">🧪 Test Connection</button>
-        
-        <div id="ai-test-result" style="margin-top: 8px; font-size: 12px;"></div>
+
+        <div id="ai-test-result" style="margin-top: 10px; font-size: 14px; line-height: 1.5;"></div>
       </div>
 
-      <h3 style="margin: 20px 0 12px 0; color: #333; font-size: 15px;">Rate Limit Status</h3>
-      <div id="settings-rate-status"></div>
+      <h3 style="margin: 22px 0 14px 0; color: #333; font-size: 17px;">Rate Limit Status</h3>
+      <div id="settings-rate-status" style="font-size: 14px;"></div>
 
-      <div style="margin-top: 20px; display: flex; gap: 10px; flex-wrap: wrap;">
+      <div style="margin-top: 22px; display: flex; gap: 10px; flex-wrap: wrap;">
         <button id="save-settings-btn" style="
-          padding: 10px 20px; background: #0073b1; color: #fff;
-          border: none; border-radius: 4px; cursor: pointer; font-size: 14px;
+          padding: 10px 22px; background: #0073b1; color: #fff;
+          border: none; border-radius: 4px; cursor: pointer; font-size: 15px;
         ">💾 Save Settings</button>
         <button id="reset-limits-btn" style="
-          padding: 10px 20px; background: #6c757d; color: #fff;
-          border: none; border-radius: 4px; cursor: pointer; font-size: 14px;
+          padding: 10px 22px; background: #6c757d; color: #fff;
+          border: none; border-radius: 4px; cursor: pointer; font-size: 15px;
         ">🔄 Reset Limits</button>
       </div>
     `;
@@ -775,6 +800,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       <div style="padding: 12px; background: #f8f9fa; border-radius: 6px; font-size: 13px;">
         <div><strong>Likes:</strong> ${status.likes.hourly} (hour) | ${status.likes.daily} (day)</div>
         <div style="margin-top: 6px;"><strong>Comments:</strong> ${status.comments.hourly} (hour) | ${status.comments.daily} (day)</div>
+        <div style="margin-top: 6px;"><strong>Replies:</strong> ${status.replies.hourly} (hour) | ${status.replies.daily} (day)</div>
         <div style="margin-top: 6px;"><strong>Follows:</strong> ${status.follows.hourly} (hour) | ${status.follows.daily} (day)</div>
         <div style="margin-top: 8px; color: #666; font-size: 12px;">
           Next hourly reset: ${new Date(status.nextReset).toLocaleTimeString()}
@@ -792,16 +818,18 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       likeHiring: document.getElementById('setting-like-hiring')?.checked || false,
       likeKeywordMatches: document.getElementById('setting-like-keyword')?.checked || false,
       enableComments: document.getElementById('setting-enable-comments')?.checked || false,
+      enableReplies: document.getElementById('setting-enable-replies')?.checked || false,
       enableFollows: document.getElementById('setting-enable-follows')?.checked || false,
       maxLikes: parseInt(document.getElementById('setting-max-likes')?.value || '15', 10),
       maxComments: parseInt(document.getElementById('setting-max-comments')?.value || '5', 10),
+      maxReplies: parseInt(document.getElementById('setting-max-replies')?.value || '3', 10),
     };
 
     // Save AI settings
     await saveAISettings();
 
     await chrome.storage.local.set({ feedEngagementSettings: settings });
-    alert('✅ Settings saved! AI comments will be generated using Qwen when enabled.');
+    alert('✅ Settings saved! AI comments will be generated based on post context.');
     closePanel();
   }
 
@@ -837,10 +865,10 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    */
   function getDefaultAISettings() {
     return {
-      enableAI: false,
-      provider: 'dashscope',
+      enableAI: true,
+      provider: 'xai',          // xAI Grok 4 Fast по умолчанию
       apiKey: '',
-      model: 'qwen-3.5-72b',
+      model: 'grok-4-fast',     // Grok 4 Fast
       analyzeImages: true,
       endpoint: '',
     };
@@ -851,10 +879,10 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    */
   function getModelOptions(provider, selectedModel) {
     if (!window.linkedInAutoApply?.feedAI) {
-      return '<option value="qwen-3.5-72b">Qwen 3.5 72B</option>';
+      return '<option value="grok-4-fast">Grok 4 Fast ⚡</option>';
     }
-    
-    const models = window.linkedInAutoApply.feedAI.getAvailableModels(provider || 'dashscope');
+
+    const models = window.linkedInAutoApply.feedAI.getAvailableModels(provider || 'xai');
     return models.map(m => 
       `<option value="${m.value}" ${m.value === selectedModel ? 'selected' : ''}>${m.label}</option>`
     ).join('');
@@ -867,9 +895,9 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     const resultEl = document.getElementById('ai-test-result');
     if (!resultEl) return;
 
-    const provider = document.getElementById('ai-provider')?.value || 'dashscope';
+    const provider = document.getElementById('ai-provider')?.value || 'xai';
     const apiKey = document.getElementById('ai-apikey')?.value || '';
-    const model = document.getElementById('ai-model')?.value || 'qwen-3.5-72b';
+    const model = document.getElementById('ai-model')?.value || 'grok-4-fast';
 
     resultEl.style.color = '#666';
     resultEl.innerText = '🔄 Testing connection...';
@@ -891,7 +919,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    * Handle provider change
    */
   function onProviderChange() {
-    const provider = document.getElementById('ai-provider')?.value || 'dashscope';
+    const provider = document.getElementById('ai-provider')?.value || 'xai';
     const modelSelect = document.getElementById('ai-model');
     if (modelSelect) {
       modelSelect.innerHTML = getModelOptions(provider, null);
@@ -903,10 +931,10 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    */
   async function saveAISettings() {
     const settings = {
-      enableAI: document.getElementById('ai-enable')?.checked || false,
-      provider: document.getElementById('ai-provider')?.value || 'dashscope',
+      enableAI: document.getElementById('ai-enable')?.checked !== false,
+      provider: document.getElementById('ai-provider')?.value || 'xai',
       apiKey: document.getElementById('ai-apikey')?.value || '',
-      model: document.getElementById('ai-model')?.value || 'qwen-3.5-72b',
+      model: document.getElementById('ai-model')?.value || 'grok-4-fast',
       analyzeImages: document.getElementById('ai-analyze-images')?.checked || true,
       endpoint: '',
     };
@@ -999,3 +1027,4 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
   console.log('[FeedUI] Module loaded successfully');
 })();
+  

@@ -17,6 +17,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     MAX_COMMENTS_PER_DAY: 20,
     MAX_FOLLOWS_PER_HOUR: 10,
     MAX_FOLLOWS_PER_DAY: 30,
+    MAX_REPLIES_PER_HOUR: 4,
+    MAX_REPLIES_PER_DAY: 15,
 
     // Delay ranges (ms) for human-like behavior
     MIN_LIKE_DELAY: 3000,
@@ -25,6 +27,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     MAX_COMMENT_DELAY: 15000,
     MIN_FOLLOW_DELAY: 5000,
     MAX_FOLLOW_DELAY: 10000,
+    MIN_REPLY_DELAY: 10000,
+    MAX_REPLY_DELAY: 18000,
 
     // Scroll behavior
     MIN_SCROLL_DELAY: 1500,
@@ -36,6 +40,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       like: 1.0,      // 100% chance to like qualifying posts
       comment: 0.5,   // 50% chance to comment (when enabled)
       follow: 0.3,    // 30% chance to follow author
+      reply: 0.4,     // 40% chance to reply to a comment (when enabled)
     },
 
     // Cooldown after reaching limits
@@ -58,6 +63,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     commentsToday: 0,
     followsThisHour: 0,
     followsToday: 0,
+    repliesThisHour: 0,
+    repliesToday: 0,
     lastReset: Date.now(),
     lastHourReset: Date.now(),
   };
@@ -66,6 +73,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
   let sessionStats = {
     liked: 0,
     commented: 0,
+    replied: 0,
     followed: 0,
     skipped: 0,
     errors: 0,
@@ -191,6 +199,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           commentsToday: stats.commentsToday || 0,
           followsThisHour: stats.lastHourReset < hourAgo ? 0 : (stats.followsThisHour || 0),
           followsToday: stats.followsToday || 0,
+          repliesThisHour: stats.lastHourReset < hourAgo ? 0 : (stats.repliesThisHour || 0),
+          repliesToday: stats.repliesToday || 0,
           lastReset: stats.date,
           lastHourReset: stats.lastHourReset < hourAgo ? now : stats.lastHourReset,
         };
@@ -225,6 +235,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           commentsToday: rateLimitState.commentsToday,
           followsThisHour: rateLimitState.followsThisHour,
           followsToday: rateLimitState.followsToday,
+          repliesThisHour: rateLimitState.repliesThisHour,
+          repliesToday: rateLimitState.repliesToday,
         },
       });
     } catch (err) {
@@ -247,6 +259,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       commentsToday: 0,
       followsThisHour: 0,
       followsToday: 0,
+      repliesThisHour: 0,
+      repliesToday: 0,
       lastReset: Date.now(),
       lastHourReset: Date.now(),
     };
@@ -262,6 +276,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       rateLimitState.likesThisHour = 0;
       rateLimitState.commentsThisHour = 0;
       rateLimitState.followsThisHour = 0;
+      rateLimitState.repliesThisHour = 0;
       rateLimitState.lastHourReset = now;
       saveDailyStats();
       console.log('[FeedEngagement] Hourly limits reset');
@@ -294,6 +309,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         daily: CONFIG.MAX_FOLLOWS_PER_DAY,
         currentHourly: rateLimitState.followsThisHour,
         currentDaily: rateLimitState.followsToday,
+      },
+      reply: {
+        hourly: CONFIG.MAX_REPLIES_PER_HOUR,
+        daily: CONFIG.MAX_REPLIES_PER_DAY,
+        currentHourly: rateLimitState.repliesThisHour,
+        currentDaily: rateLimitState.repliesToday,
       },
     };
 
@@ -341,6 +362,10 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         rateLimitState.followsThisHour++;
         rateLimitState.followsToday++;
         break;
+      case 'reply':
+        rateLimitState.repliesThisHour++;
+        rateLimitState.repliesToday++;
+        break;
     }
 
     saveDailyStats();
@@ -364,6 +389,10 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       follows: {
         hourly: `${rateLimitState.followsThisHour}/${CONFIG.MAX_FOLLOWS_PER_HOUR}`,
         daily: `${rateLimitState.followsToday}/${CONFIG.MAX_FOLLOWS_PER_DAY}`,
+      },
+      replies: {
+        hourly: `${rateLimitState.repliesThisHour}/${CONFIG.MAX_REPLIES_PER_HOUR}`,
+        daily: `${rateLimitState.repliesToday}/${CONFIG.MAX_REPLIES_PER_DAY}`,
       },
       cooldownActive: false,
       nextReset: new Date(rateLimitState.lastHourReset + 60 * 60 * 1000).toISOString(),
@@ -548,78 +577,75 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
   }
 
   /**
-   * Find the comment submit button (Post/Comment/Reply button)
-   * @param {Element} postEl
-   * @returns {Element|null}
+   * Check if a button looks like a comment submit button (not the action bar "Comment" toggle)
    */
+   /**
+    * Known submit-button labels (text or aria-label) across locales
+    */
+   const SUBMIT_LABELS = ['post', 'post comment', 'submit comment', 'reply',
+     'publicar', 'comentar', 'responder', 'comment'];
+
+   function isSubmitButton(btn) {
+    const text = safeGetText(btn).trim().toLowerCase();
+    const label = (safeGetAttr(btn, 'aria-label') || '').toLowerCase();
+
+    if (SUBMIT_LABELS.includes(text) || SUBMIT_LABELS.includes(label) ||
+        label.includes('post a comment')) {
+      return true;
+    }
+
+    return false;
+  }
+
   function findCommentSubmit(postEl) {
     try {
       console.log('[FeedEngagement] Searching for submit button...');
-      
-      // Strategy 1: Look in modal/dialog (LinkedIn opens comment box in overlay)
-      const modal = document.querySelector('[role="dialog"], .artdeco-modal, [class*="comment-dialog"]');
-      if (modal) {
-        console.log('[FeedEngagement] Found modal, searching for submit button inside...');
-        const modalBtns = safeQuerySelectorAll(modal, 'button');
-        for (const btn of modalBtns) {
-          const text = safeGetText(btn).trim().toLowerCase();
-          const label = (safeGetAttr(btn, 'aria-label') || '').toLowerCase();
-          const disabled = btn.disabled || btn.hasAttribute('disabled');
-          
-          console.log('[FeedEngagement] Checking modal button:', text, '|', label, '| disabled:', disabled);
-          
-          if (!disabled && (
-            text === 'post' || 
-            text === 'comment' || 
-            text === 'reply' ||
-            text === 'send' ||
-            label.includes('post comment') || 
-            label.includes('submit') ||
-            label.includes('reply')
-          )) {
-            console.log('[FeedEngagement] Found submit button in modal:', text);
+
+      // Helper: search a root element for the submit button (returns even if disabled)
+      function searchIn(root, label) {
+        const btns = safeQuerySelectorAll(root, 'button');
+        for (const btn of btns) {
+          if (isSubmitButton(btn)) {
+            const disabled = btn.disabled || btn.hasAttribute('disabled') || btn.getAttribute('aria-disabled') === 'true';
+            console.log('[FeedEngagement] Found submit button in', label, ':', safeGetText(btn).trim(), '| disabled:', disabled);
             return btn;
           }
         }
+        return null;
       }
-      
-      // Strategy 2: Look in the post element itself (inline comments)
-      const btns = safeQuerySelectorAll(postEl, 'button');
-      for (const btn of btns) {
-        const text = safeGetText(btn).trim().toLowerCase();
-        const label = (safeGetAttr(btn, 'aria-label') || '').toLowerCase();
-        const disabled = btn.disabled || btn.hasAttribute('disabled');
-        
-        if (!disabled && (
-          text === 'post' || 
-          text === 'comment' || 
-          text === 'reply' ||
-          text === 'send' ||
-          label.includes('post comment') || 
-          label.includes('submit') ||
-          label.includes('reply')
-        )) {
-          console.log('[FeedEngagement] Found submit button in post:', text);
-          return btn;
+
+      // Strategy 1: Walk up from the contenteditable input to find the
+      // nearest form/container, then find the submit button there.
+      // This is the most reliable approach regardless of class names.
+      const input = safeQuerySelector(postEl, '[role="textbox"][contenteditable="true"], div[contenteditable="true"], textarea');
+      if (input) {
+        // Walk up through parents looking for a container that has a button
+        let parent = input.parentElement;
+        for (let depth = 0; depth < 8 && parent && parent !== postEl; depth++) {
+          const btn = searchIn(parent, `input-ancestor-${depth}`);
+          if (btn) return btn;
+          parent = parent.parentElement;
         }
       }
-      
-      // Strategy 3: Look for any button with "Post" in aria-label anywhere on page
-      const allBtns = document.querySelectorAll('button[aria-label]');
-      for (const btn of allBtns) {
-        const label = (safeGetAttr(btn, 'aria-label') || '').toLowerCase();
-        const disabled = btn.disabled || btn.hasAttribute('disabled');
-        
-        if (!disabled && (
-          label.includes('post') || 
-          label.includes('comment') || 
-          label.includes('reply')
-        )) {
-          console.log('[FeedEngagement] Found submit button globally:', label);
-          return btn;
-        }
+
+      // Strategy 2: Look inside comment composer area by class pattern
+      const composer = safeQuerySelector(postEl, '[class*="comments-comment-box"], [class*="comment-compose"], [class*="comments-comment-texteditor"]');
+      if (composer) {
+        const btn = searchIn(composer, 'composer');
+        if (btn) return btn;
       }
-      
+
+      // Strategy 3: Look in the full post element
+      const btn = searchIn(postEl, 'post');
+      if (btn) return btn;
+
+      // Strategy 4: Look in modal/dialog
+      const modal = document.querySelector('[role="dialog"], .artdeco-modal');
+      if (modal) {
+        const modalBtn = searchIn(modal, 'modal');
+        if (modalBtn) return modalBtn;
+      }
+
       console.log('[FeedEngagement] Submit button not found with any strategy');
       return null;
     } catch (err) {
@@ -689,94 +715,122 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
       // Focus and type
       input.focus();
+      input.dispatchEvent(new Event('focus', { bubbles: true }));
       await delay(300);
 
-      // Clear existing - use proper method based on element type
+      // Clear existing content
       if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
         input.value = '';
-        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
       } else if (input.hasAttribute('contenteditable')) {
-        // For contenteditable divs, use textContent for horizontal typing
-        input.textContent = '';
-        input.dispatchEvent(new Event('input', { bubbles: true }));
+        // Select all and delete so the editor's internal state stays in sync
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete', false, null);
       }
-      input.dispatchEvent(new Event('focus', { bubbles: true }));
+      await delay(200);
 
-      console.log('[FeedEngagement] Typing comment horizontally...');
+      console.log('[FeedEngagement] Typing comment...');
 
-      // Type using proper keyboard events for horizontal typing
-      const eventType = input.tagName === 'TEXTAREA' || input.tagName === 'INPUT' ? 'value' : 'textContent';
-      
-      for (let i = 0; i < commentText.length; i++) {
-        const char = commentText[i];
-        
-        if (eventType === 'value') {
+      if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
+        // For standard form elements, set value directly
+        for (let i = 0; i < commentText.length; i++) {
+          const char = commentText[i];
           input.value += char;
-        } else {
-          input.textContent += char;
+          input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char }));
+          await delay(randomDelay(50, 150));
         }
-        
-        // Dispatch proper events for LinkedIn to detect input
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        input.dispatchEvent(new KeyboardEvent('keydown', {
-          key: char,
-          bubbles: true,
-          cancelable: true,
-        }));
-        input.dispatchEvent(new KeyboardEvent('keyup', {
-          key: char,
-          bubbles: true,
-          cancelable: true,
-        }));
-        
-        await delay(randomDelay(50, 150)); // Typing speed
+      } else {
+        // For contenteditable (LinkedIn's editor): simulate realistic key events
+        // per character so LinkedIn's React/Prosemirror editor detects the change
+        input.focus();
+        for (let i = 0; i < commentText.length; i++) {
+          const char = commentText[i];
+
+          // Dispatch keydown/keypress before inserting
+          input.dispatchEvent(new KeyboardEvent('keydown', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true, cancelable: true }));
+          input.dispatchEvent(new KeyboardEvent('keypress', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true, cancelable: true }));
+
+          // Primary: execCommand (still the most reliable for contenteditable)
+          document.execCommand('insertText', false, char);
+
+          // Also dispatch beforeinput + input (React 17+ listens on these)
+          input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: char }));
+          input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char }));
+
+          // keyup completes the keystroke
+          input.dispatchEvent(new KeyboardEvent('keyup', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true }));
+
+          await delay(randomDelay(50, 150));
+        }
       }
 
-      // Final events
+      // Fire comprehensive post-typing events so LinkedIn's framework picks up the change
+      input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: commentText }));
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: commentText }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
-      input.dispatchEvent(new Event('blur', { bubbles: true }));
-      
+      // compositionend helps editors that rely on IME lifecycle
+      input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: commentText }));
+
       console.log('[FeedEngagement] Comment typed, waiting for submit button to be enabled...');
       await delay(randomDelay(800, 1500));
 
-      // Submit - find submit button with retries
+      // Submit - find submit button and wait for it to become enabled
       let submitBtn = null;
-      for (let attempt = 0; attempt < 5; attempt++) {
+      let submitReady = false;
+      for (let attempt = 0; attempt < 10; attempt++) {
         submitBtn = findCommentSubmit(postEl);
-        console.log('[FeedEngagement] Find submit button attempt', attempt + 1, ':', !!submitBtn);
-        
+
         if (submitBtn) {
-          // Check if button is actually clickable
           const isDisabled = submitBtn.disabled || submitBtn.hasAttribute('disabled');
-          const ariaDisabled = submitBtn.getAttribute('aria-disabled');
-          const isAriaDisabled = ariaDisabled === 'true';
-          
-          console.log('[FeedEngagement] Submit button state:', {
+          const isAriaDisabled = submitBtn.getAttribute('aria-disabled') === 'true';
+
+          console.log('[FeedEngagement] Submit button attempt', attempt + 1, ':', {
             disabled: isDisabled,
             ariaDisabled: isAriaDisabled,
-            visible: submitBtn.offsetParent !== null,
           });
-          
-          if (!isDisabled && !isAriaDisabled && submitBtn.offsetParent !== null) {
-            console.log('[FeedEngagement] Submit button is enabled and visible!');
+
+          if (!isDisabled && !isAriaDisabled) {
+            submitReady = true;
             break;
           }
+
+          // Button found but still disabled — re-focus the input and fire events
+          // to nudge LinkedIn's editor into re-evaluating the button state
+          input.focus();
+          // Append + remove a space to force a state change cycle
+          document.execCommand('insertText', false, ' ');
+          await delay(100);
+          document.execCommand('delete', false, null);
+          input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+          await delay(100);
+          // Also fire on the input directly (not just activeElement)
+          input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: commentText }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        } else {
+          console.log('[FeedEngagement] Submit button attempt', attempt + 1, ': not found yet');
         }
-        
-        await delay(500);
+
+        await delay(600);
       }
 
-      if (!submitBtn) {
-        console.error('[FeedEngagement] Comment submit button not found after 5 attempts');
+      if (!submitReady) {
+        console.error('[FeedEngagement] Comment submit button not ready after 10 attempts');
         sessionStats.errors++;
         return false;
       }
 
-      // Click submit with scroll into view
+      // Click submit with full pointer + mouse event sequence
       console.log('[FeedEngagement] Clicking submit button...');
       submitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await delay(300);
-      submitBtn.click();
+      // Pointer events (LinkedIn may use these instead of mouse events)
+      submitBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+      submitBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      await delay(50);
+      submitBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
+      submitBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+      submitBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      submitBtn.click(); // fallback native click
       await delay(randomDelay(1500, 2500));
 
       // Track
@@ -796,151 +850,295 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
   // Extended library of professional comments for various post types
 
   const COMMENT_LIBRARY = {
-    // Hiring / Job posts
     hiring: [
-      'Great opportunity! 🚀',
-      'Exciting role! Best of luck with the hiring process.',
-      'This sounds like a fantastic opportunity for the right candidate!',
-      'Amazing team! Any candidate would be lucky to join. 🌟',
-      'Great company culture! Hope you find the perfect fit.',
-      'This role sounds challenging and rewarding! 💼',
-      'Fantastic opportunity for growth! 📈',
-      'Your team is doing amazing work! Good luck hiring!',
-      'This position looks like a great fit for someone passionate!',
-      'Exciting times ahead! Hope you find top talent! 🎯',
+      'solid role, good luck finding someone.',
+      'interesting position for the right person.',
+      'strong team, candidates will notice.',
+      'sounds like a rewarding role.',
+      'good opportunity for growth.',
+      'the role description looks clear.',
+      'solid hiring, good fit ahead.',
+      'promising position, well structured.',
     ],
 
-    // Achievement / Milestone posts
     achievement: [
-      'Congratulations on this achievement! 🎉',
-      'Well deserved! Keep up the great work!',
-      'Amazing accomplishment! Inspiring to see.',
-      'So happy for your success! You earned it! 👏',
-      'Incredible milestone! Can\'t wait to see what\'s next!',
-      'This is what dedication looks like! Bravo! 🌟',
-      'Your hard work is paying off! Congratulations!',
-      'What an inspiring journey! Well done! 💪',
-      'Celebrating your success with you! 🥂',
-      'Outstanding achievement! You\'re a role model! ⭐',
+      'well earned, congrats.',
+      'dedication shows in the result.',
+      'impressive milestone, well done.',
+      'hard work clearly paid off.',
+      'earned it, keep going.',
+      'solid achievement, congrats.',
+      'the progress speaks for itself.',
+      'notable result, well deserved.',
     ],
 
-    // Learning / Educational posts
     learning: [
-      'Thanks for sharing this insight!',
-      'Great perspective! Thanks for the valuable content.',
-      'Interesting take! Appreciate you sharing.',
-      'This is gold! Saving for later reference. 💡',
-      'Learned something new today! Thank you! 📚',
-      'Such a valuable lesson! Thanks for breaking it down.',
-      'Your posts always teach me something new! 🙏',
-      'Brilliant explanation! Very clear and helpful.',
-      'This resonates so much! Thanks for the wisdom.',
-      'Bookmarked! This is exactly what I needed to read. ✨',
+      'useful perspective, saved it.',
+      'clear and practical breakdown.',
+      'learned something new here.',
+      'solid insight, appreciate it.',
+      'practical advice, well explained.',
+      'valuable takeaway from this.',
+      'concise and to the point.',
+      'good framing of the topic.',
     ],
 
-    // Company / Business updates
     company: [
-      'Exciting news for your company! 🎊',
-      'Congratulations on the growth! Well earned!',
-      'This is huge! Wishing you continued success!',
-      'Amazing progress! Your team is crushing it! 💪',
-      'What a milestone! Here\'s to many more! 🥂',
-      'Incredible journey! Proud to see your success!',
-      'This is just the beginning! Onwards and upwards! 🚀',
-      'Fantastic achievement! Your vision is inspiring!',
-      'Big things happening! Excited to see what\'s next!',
-      'Your company\'s growth is truly inspiring! 🌟',
+      'impressive growth, well earned.',
+      'strong progress, team delivers.',
+      'good momentum, keep building.',
+      'solid trajectory for the company.',
+      'visible results, well done.',
+      'the team is clearly executing.',
+      'meaningful progress, congrats.',
+      'good direction, results show it.',
     ],
 
-    // Project / Product launches
     launch: [
-      'Congrats on the launch! Looks amazing! 🎉',
-      'This is incredible! Can\'t wait to try it out!',
-      'So much hard work paid off! Well done! 👏',
-      'Game changer! Excited to see this succeed! 🚀',
-      'Brilliant execution! The details look perfect!',
-      'What a release! Your team outdid themselves! 💯',
-      'This is going to make waves! Congratulations! 🌊',
-      'Impressive work! The market needs this! ✨',
-      'Launch day magic! So proud of what you built! 🎊',
-      'Revolutionary! This will help so many people! 🙌',
+      'clean execution on the launch.',
+      'market needs this, well timed.',
+      'solid release, looks polished.',
+      'good product, well built.',
+      'the details look sharp.',
+      'promising launch, congrats.',
+      'well executed, looks solid.',
+      'interesting product, good timing.',
     ],
 
-    // Industry insights / Thought leadership
     insight: [
-      'Spot on analysis! You nailed it! 🎯',
-      'This is the kind of insight we need more of!',
-      'Brilliant perspective! Changed how I think about this.',
-      'Your expertise really shows! Thanks for sharing! 📖',
-      'This should be required reading! So true! 💡',
-      'Wisdom right here! Bookmarking this! ⭐',
-      'You have a gift for explaining complex topics! 🧠',
-      'Industry leaders need to hear this! 📢',
-      'This is why I follow you! Always insightful! 🙏',
-      'Masterclass in understanding the market! 📊',
+      'sharp analysis, well framed.',
+      'clear perspective on the topic.',
+      'practical insight, well put.',
+      'good read, solid reasoning.',
+      'the data supports your point.',
+      'nuanced take, appreciated.',
+      'well structured argument.',
+      'useful lens on the market.',
     ],
 
-    // Gratitude / Thank you posts
     gratitude: [
-      'Your gratitude is contagious! Spread the love! 💕',
-      'Beautiful post! Gratitude is everything! 🙏',
-      'This warmed my heart! Keep being amazing! ✨',
-      'So wholesome! The world needs more positivity! 🌈',
-      'Thank YOU for being such a positive influence! 💫',
-      'Grateful for posts like this! Keep shining! ⭐',
-      'Your appreciation shows your character! 🌟',
-      'This is what community is about! Love it! 🤝',
-      'Beautiful reminder to appreciate the little things! 💝',
-      'Your kindness inspires others! Keep it up! 💖',
+      'genuine words, appreciated.',
+      'good reminder to be grateful.',
+      'warm post, resonates.',
+      'simple and honest, well said.',
+      'gratitude goes a long way.',
+      'positive energy in this.',
+      'refreshing to read.',
+      'the sincerity comes through.',
     ],
 
-    // Event / Conference posts
     event: [
-      'Looks like an amazing event! Wish I was there! 🎪',
-      'So many great connections made! Enjoy! 🤝',
-      'Events like this are pure gold! Have a blast! ✨',
-      'The energy must be incredible! Live it up! 🎉',
-      'Great speakers! You\'re in for a treat! 🎤',
-      'Networking at its finest! Make great connections! 🌐',
-      'This conference is legendary! Enjoy every moment! 🏆',
-      'Learning and connecting! Best combination! 📚',
-      'The insights from this event will be invaluable! 💡',
-      'Have an incredible time! See you at the next one! 👋',
+      'solid lineup at the event.',
+      'good networking opportunity.',
+      'strong speakers this year.',
+      'valuable event, good pick.',
+      'looks like a productive gathering.',
+      'good content coming from this.',
+      'the agenda looks solid.',
+      'useful connections ahead.',
     ],
 
-    // Personal story / Vulnerability posts
     personal: [
-      'Thank you for your vulnerability! It matters! 💕',
-      'Your story inspires others to share! Keep going! 🌟',
-      'This took courage to share! Respect! 🙏',
-      'Your honesty is refreshing! Thank you! ✨',
-      'Stories like yours change lives! Keep sharing! 📖',
-      'You\'re helping others by being open! Bravo! 👏',
-      'This resonates deeply! You\'re not alone! 💪',
-      'Your journey is powerful! Thanks for trusting us! 💫',
-      'Vulnerability is strength! You prove it! 🌈',
-      'Keep sharing your truth! It matters more than you know! 💖',
+      'honest share, respect.',
+      'takes courage, well said.',
+      'relatable story, resonates.',
+      'genuine and grounded.',
+      'real talk, appreciated.',
+      'your openness helps others.',
+      'honest perspective, valued.',
+      'raw and real, respect.',
     ],
 
-    // General / Universal comments (fallback)
+    world_impact: [
+      'the ripple effect here is underestimated.',
+      'second-order consequences matter most.',
+      'scale changes the calculus entirely.',
+      'systemic shift, not just incremental.',
+      'the downstream effects will compound.',
+      'structural change, not surface level.',
+      'the leverage point is the key part.',
+      'long-term compounding makes this work.',
+    ],
+
+    innovation: [
+      'removes the core constraint entirely.',
+      'the non-obvious application matters more.',
+      'inflection point for the whole space.',
+      'unlocks a class of problems at once.',
+      'the architecture choice is what scales.',
+      'solves the bottleneck, not the symptom.',
+      'first-principles approach, rare to see.',
+      'the timing aligns with adoption curves.',
+    ],
+
     general: [
-      'Great post! Thanks for sharing! 👍',
-      'This made my day! Thank you! 😊',
-      'Always love seeing your content! 🌟',
-      'Quality content as always! 💯',
-      'This is why I\'m on LinkedIn! For posts like this! ✨',
-      'Bookmarked for later! So valuable! 📌',
-      'You never disappoint! Excellent as always! 🎯',
-      'This deserves more attention! Sharing! 📢',
-      'Your posts brighten my feed! Keep it up! ☀️',
-      'Absolutely agree with this! Well said! 💬',
-      'This is the content I signed up for! 🙌',
-      'Saving this for inspiration! Thanks! 💝',
-      'Your perspective is always refreshing! 🌊',
-      'Keep creating value! It shows! 💎',
-      'This hit different! Thank you! 🎯',
+      'solid point, well put.',
+      'interesting take on this.',
+      'worth reading, saved.',
+      'good content, appreciated.',
+      'clear and well framed.',
+      'resonates, good perspective.',
+      'concise and valuable.',
+      'well said, noted.',
+      'good angle on the topic.',
+      'practical and relevant.',
     ],
   };
+
+  // ── Russian Comment Library ──────────────────────────────────────────────
+  const COMMENT_LIBRARY_RU = {
+    hiring: [
+      'сильная позиция, удачи в поиске.',
+      'интересная роль, кандидаты заметят.',
+      'хорошая вакансия, описание чёткое.',
+      'перспективная позиция.',
+      'команда явно на уровне.',
+      'роль звучит достойно.',
+      'толковое описание, видно подход.',
+      'хорошая возможность для роста.',
+    ],
+
+    achievement: [
+      'заслуженный результат.',
+      'усилия окупились, видно.',
+      'достойный итог работы.',
+      'результат говорит за себя.',
+      'впечатляющий прогресс.',
+      'серьёзное достижение.',
+      'труд виден в результате.',
+      'закономерный итог.',
+    ],
+
+    learning: [
+      'полезный разбор, сохранил.',
+      'чётко и по делу.',
+      'дельный взгляд на тему.',
+      'практичный материал.',
+      'узнал новое, ценно.',
+      'хорошее объяснение.',
+      'полезно, буду применять.',
+      'толковый инсайт.',
+    ],
+
+    company: [
+      'рост впечатляет.',
+      'команда явно работает.',
+      'хорошая динамика.',
+      'серьёзный прогресс.',
+      'результаты видны.',
+      'сильное направление.',
+      'видно системный подход.',
+      'уверенное развитие.',
+    ],
+
+    launch: [
+      'чистый запуск, выглядит хорошо.',
+      'рынку это пригодится.',
+      'продукт выглядит зрело.',
+      'хорошая реализация.',
+      'детали проработаны.',
+      'вовремя вышли.',
+      'толковый релиз.',
+      'видно внимание к деталям.',
+    ],
+
+    insight: [
+      'точный анализ, по делу.',
+      'хороший разбор темы.',
+      'практичный взгляд.',
+      'данные подтверждают мысль.',
+      'чёткая аргументация.',
+      'нюансы учтены, ценно.',
+      'полезный ракурс.',
+      'глубокий разбор.',
+    ],
+
+    gratitude: [
+      'искренние слова, ценно.',
+      'хорошее напоминание.',
+      'тёплый пост.',
+      'просто и честно.',
+      'благодарность чувствуется.',
+      'позитивная энергия.',
+      'приятно читать.',
+      'искренность видна.',
+    ],
+
+    event: [
+      'сильный состав спикеров.',
+      'полезное мероприятие.',
+      'хорошая программа.',
+      'ценные контакты впереди.',
+      'продуктивное событие.',
+      'контент оттуда будет полезен.',
+      'повестка выглядит сильно.',
+      'стоящее мероприятие.',
+    ],
+
+    personal: [
+      'честно, уважаю.',
+      'смело и по делу.',
+      'откликается.',
+      'искренне и просто.',
+      'ценю открытость.',
+      'реальный опыт, ценно.',
+      'честный взгляд.',
+      'жизненно.',
+    ],
+
+    world_impact: [
+      'каскадный эффект тут недооценён.',
+      'последствия второго порядка важнее.',
+      'масштаб меняет расклад полностью.',
+      'системный сдвиг, не косметика.',
+      'эффект будет накапливаться.',
+      'структурное изменение, не поверхностное.',
+      'рычаг воздействия тут ключевой.',
+      'долгосрочное накопление решает.',
+    ],
+
+    innovation: [
+      'снимает ключевое ограничение.',
+      'неочевидное применение важнее.',
+      'точка перелома для всей области.',
+      'разблокирует целый класс задач.',
+      'архитектурный выбор и даёт масштаб.',
+      'решает узкое место, не симптом.',
+      'подход с нуля, редкость.',
+      'тайминг совпадает с кривой принятия.',
+    ],
+
+    general: [
+      'дельная мысль.',
+      'интересный ракурс.',
+      'ценное наблюдение.',
+      'по делу, сохранил.',
+      'чётко сформулировано.',
+      'хороший взгляд на тему.',
+      'коротко и ёмко.',
+      'практично и актуально.',
+      'толковая мысль.',
+      'хорошо подмечено.',
+    ],
+  };
+
+  /**
+   * Detect if text is primarily Russian (Cyrillic).
+   * Strips URLs, hashtags, and @mentions before counting so that
+   * English technical terms / links don't skew the ratio.
+   */
+  function isRussianText(text) {
+    if (!text) return false;
+    const clean = text
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/#\w+/g, '')
+      .replace(/@\w+/g, '');
+    const cyrillic = (clean.match(/[\u0400-\u04FF]/g) || []).length;
+    const latin = (clean.match(/[a-zA-Z]/g) || []).length;
+    // Trigger on any meaningful Cyrillic presence (≥ 10 chars)
+    // even if Latin chars dominate (common in tech posts with English jargon)
+    return cyrillic > 10 && cyrillic > latin * 0.3;
+  }
 
   /**
    * Detect post type based on content, hashtags, and context
@@ -953,50 +1151,54 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     const headline = (post?.headline || '').toLowerCase();
     const text = content + ' ' + hashtags.join(' ') + ' ' + headline;
 
-    // Hiring signals
-    if (/(hiring|we'?re hiring|job|position|role|opportunity|join our team|vacancy|career|now hiring)/.test(text)) {
+    // Hiring signals (EN + RU)
+    if (/(hiring|we'?re hiring|job|position|role|opportunity|join our team|vacancy|career|now hiring|вакансия|ищем|набираем|присоединяйтесь|нанимаем|позиция|открыта вакансия|ищем в команду)/.test(text)) {
       return 'hiring';
     }
 
-    // Achievement signals
-    if (/(congrat|achiev|milestone|promot|anniversary|celebrat|proud|award|won|reached|goal|success)/.test(text)) {
+    // Achievement signals (EN + RU)
+    if (/(congrat|achiev|milestone|promot|anniversary|celebrat|proud|award|won|reached|goal|success|поздравля|достижение|повышение|юбилей|награ|победа|горжусь|успех|результат|цель достигнута)/.test(text)) {
       return 'achievement';
     }
 
-    // Learning signals
-    if (/(learn|article|insight|thought|perspective|teach|lesson|tip|advice|guide|tutorial|how to)/.test(text)) {
+    // Learning signals (EN + RU)
+    if (/(learn|article|insight|thought|perspective|teach|lesson|tip|advice|guide|tutorial|how to|урок|статья|инсайт|совет|обучение|полезно|лайфхак|гайд|разбор|как сделать)/.test(text)) {
       return 'learning';
     }
 
-    // Company/Business signals
-    if (/(company|business|growth|revenue|funding|investment|expansion|team|office|new hire)/.test(text)) {
+    // Company/Business signals (EN + RU)
+    if (/(company|business|growth|revenue|funding|investment|expansion|team|office|new hire|компания|бизнес|рост|выручка|инвестиции|расширение|команда|офис|масштабирование)/.test(text)) {
       return 'company';
     }
 
-    // Launch signals
-    if (/(launch|release|announce|new product|introducing|unveil|beta|version|ship)/.test(text)) {
+    // Launch signals (EN + RU)
+    if (/(launch|release|announce|new product|introducing|unveil|beta|version|ship|запуск|релиз|анонс|новый продукт|представляем|выпуск|версия|выходит)/.test(text)) {
       return 'launch';
     }
 
-    // Industry insight signals
-    if (/(industry|market|trend|analysis|prediction|forecast|future|state of|report|data|research)/.test(text)) {
+    // Industry insight signals (EN + RU)
+    if (/(industry|market|trend|analysis|prediction|forecast|future|state of|report|data|research|индустрия|рынок|тренд|анализ|прогноз|будущее|отчёт|данные|исследование)/.test(text)) {
       return 'insight';
     }
 
-    // Gratitude signals
-    if (/(thank|grateful|gratitude|appreciat|blessed|lucky|honored|privileged|thankful)/.test(text)) {
+    // Gratitude signals (EN + RU)
+    if (/(thank|grateful|gratitude|appreciat|blessed|lucky|honored|privileged|thankful|спасибо|благодар|признателен|повезло|ценю|рад|благословлён)/.test(text)) {
       return 'gratitude';
     }
 
-    // Event signals
-    if (/(event|conference|summit|webinar|workshop|meetup|convention|expo|seminar|panel)/.test(text)) {
+    // Event signals (EN + RU)
+    if (/(event|conference|summit|webinar|workshop|meetup|convention|expo|seminar|panel|мероприятие|конференция|саммит|вебинар|воркшоп|митап|выставка|семинар|панельная дискуссия)/.test(text)) {
       return 'event';
     }
 
-    // Personal story signals
-    if (/(story|journey|personal|experience|struggle|challenge|overcome|mental health|vulnerable|honest)/.test(text)) {
+    // Personal story signals (EN + RU)
+    if (/(story|journey|personal|experience|struggle|challenge|overcome|mental health|vulnerable|honest|история|путь|личный опыт|борьба|вызов|преодолел|честно|откровенно|выгорание)/.test(text)) {
       return 'personal';
     }
+
+    // World impact / Innovation — use feedAI detector if available, else regex fallback
+    const priorityTopic = window.linkedInAutoApply?.feedAI?.detectPriorityTopic?.(post);
+    if (priorityTopic) return priorityTopic;
 
     // Default to general
     return 'general';
@@ -1009,48 +1211,50 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    */
   async function generateComment(post) {
     try {
-      // User-configured comments (highest priority)
-      const comments = window.linkedInAutoApply?.settings?.autoComments || [];
-      if (comments && comments.length > 0) {
-        return comments[Math.floor(Math.random() * comments.length)];
+      // Skip political/military topics entirely — no AI, no library fallback
+      if (window.linkedInAutoApply?.feedAI?.isSensitiveTopic?.(post)) {
+        console.log('[FeedEngagement] Sensitive topic (politics/military), skipping comment');
+        return null;
       }
 
-      // Try AI generation if enabled
-      const aiSettings = window.linkedInAutoApply?.feedAI ? 
-        await window.linkedInAutoApply.feedAI.loadAPISettings() : null;
-      
-      if (aiSettings?.enableAI) {
+      // PRIMARY: AI generation based on post context (text + images)
+      if (window.linkedInAutoApply?.feedAI) {
         try {
-          console.log('[FeedEngagement] Using AI to generate comment...');
-          const aiComment = await window.linkedInAutoApply.feedAI.generateAIComment(post, {
-            analyzeImage: aiSettings.analyzeImages !== false,
+          const aiSettings = await window.linkedInAutoApply.feedAI.loadAPISettings();
+          console.log('[FeedEngagement] Generating AI comment for post:', {
+            author: post?.author,
+            contentLength: (post?.content || '').length,
+            hasMedia: post?.hasMedia,
           });
-          
+          const aiComment = await window.linkedInAutoApply.feedAI.generateAIComment(post, {
+            analyzeImage: aiSettings?.analyzeImages !== false,
+          });
+
           if (aiComment) {
-            console.log('[FeedEngagement] ✓ AI comment generated:', aiComment.slice(0, 80) + '...');
-            return aiComment;
+            // Strip any remaining newlines/extra spaces to prevent blank lines in replies
+            const cleaned = aiComment.replace(/[\r\n]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+            console.log('[FeedEngagement] ✓ AI comment generated:', cleaned);
+            return cleaned;
           }
         } catch (aiErr) {
-          console.warn('[FeedEngagement] AI comment failed, falling back to library:', aiErr.message);
-          // Continue to library fallback
+          console.warn('[FeedEngagement] AI comment generation failed, falling back to library:', aiErr.message);
         }
       }
 
-      // Detect post type
+      // FALLBACK: static library (only when AI unavailable or fails)
+      // Pick Russian or English library based on post language
+      const russian = isRussianText(post?.content);
+      const library = russian ? COMMENT_LIBRARY_RU : COMMENT_LIBRARY;
+      console.log('[FeedEngagement] Using static comment library as fallback, lang:', russian ? 'ru' : 'en');
       const postType = detectPostType(post);
-
-      // Get comments for this type
-      const typeComments = COMMENT_LIBRARY[postType] || COMMENT_LIBRARY.general;
-
-      // Select random comment
+      const typeComments = library[postType] || library.general;
       const comment = typeComments[Math.floor(Math.random() * typeComments.length)];
 
-      console.log(`[FeedEngagement] Generated ${postType} comment (library): "${comment}"`);
+      console.log(`[FeedEngagement] Generated ${postType} comment (library fallback): "${comment}"`);
       return comment;
 
     } catch (err) {
       console.warn('[FeedEngagement] generateComment error:', err.message);
-      // Fallback to general comment
       const generalComments = COMMENT_LIBRARY.general;
       return generalComments[Math.floor(Math.random() * generalComments.length)];
     }
@@ -1132,6 +1336,285 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     }
   }
 
+  // ── Reply to Comments Functionality ──────────────────────────────────
+
+  /**
+   * Scrape existing comments from a post element
+   * @param {Element} postEl
+   * @returns {{ author: string, text: string, element: Element }[]}
+   */
+  function scrapeComments(postEl) {
+    const comments = [];
+    try {
+      // LinkedIn wraps each comment in an article or a div with data-testid
+      const commentEls = safeQuerySelectorAll(postEl, 'article[class*="comment"], [data-testid*="comment"]');
+
+      // Fallback: look for comment containers by structure
+      const fallbackEls = commentEls.length > 0
+        ? commentEls
+        : safeQuerySelectorAll(postEl, '[class*="comments-comment-item"], [class*="comment-item"]');
+
+      for (const el of fallbackEls) {
+        // Extract author
+        const authorEl = safeQuerySelector(el, '[class*="comment-item__inline-show-more-text"], a[class*="comment"] span[dir="ltr"], span[class*="hoverable-link-text"]');
+        const author = safeGetText(authorEl) || 'Unknown';
+
+        // Extract comment text
+        const textEl = safeQuerySelector(el, '[class*="comment-item__main-content"], [class*="feed-shared-inline-show-more-text"], span[dir="ltr"][class*="break-words"]');
+        const text = safeGetText(textEl);
+
+        if (text && text.length >= 10) {
+          comments.push({ author, text, element: el });
+        }
+      }
+
+      console.log(`[FeedEngagement] Scraped ${comments.length} comments from post`);
+    } catch (err) {
+      console.warn('[FeedEngagement] scrapeComments error:', err.message);
+    }
+    return comments;
+  }
+
+  /**
+   * Expand the comments section of a post by clicking the comment button
+   * @param {Element} postEl
+   * @returns {Promise<boolean>}
+   */
+  async function expandComments(postEl) {
+    try {
+      // Check if comments are already visible
+      const existingComments = safeQuerySelectorAll(postEl, 'article[class*="comment"], [data-testid*="comment"], [class*="comments-comment-item"]');
+      if (existingComments.length > 0) return true;
+
+      // Click comment button to expand
+      const commentBtn = findCommentButton(postEl);
+      if (!commentBtn) return false;
+
+      commentBtn.click();
+      await delay(randomDelay(1500, 2500));
+      return true;
+    } catch (err) {
+      console.warn('[FeedEngagement] expandComments error:', err.message);
+      return false;
+    }
+  }
+
+  /**
+   * Find the Reply button for a specific comment element
+   * @param {Element} commentEl
+   * @returns {Element|null}
+   */
+  function findReplyButton(commentEl) {
+    try {
+      const btns = safeQuerySelectorAll(commentEl, 'button');
+      for (const btn of btns) {
+        const text = safeGetText(btn).toLowerCase();
+        const label = (safeGetAttr(btn, 'aria-label') || '').toLowerCase();
+        if (text === 'reply' || text === 'responder' || text === 'ответить' ||
+            label.includes('reply') || label.includes('responder') || label.includes('ответить')) {
+          return btn;
+        }
+      }
+    } catch (err) {
+      console.warn('[FeedEngagement] findReplyButton error:', err.message);
+    }
+    return null;
+  }
+
+  /**
+   * Post a reply to a comment
+   * @param {Element} postEl - The parent post element
+   * @param {Element} commentEl - The comment element to reply to
+   * @param {string} replyText - The reply text
+   * @returns {Promise<boolean>}
+   */
+  async function replyToComment(postEl, commentEl, replyText) {
+    try {
+      console.log('[FeedEngagement] replyToComment starting...', {
+        replyText: replyText.slice(0, 50),
+      });
+
+      // Check rate limit
+      const limit = checkRateLimit('reply');
+      if (!limit.allowed) {
+        console.warn('[FeedEngagement] Reply rate limited:', limit.reason);
+        return false;
+      }
+
+      // Find and click Reply button on the comment
+      const replyBtn = findReplyButton(commentEl);
+      if (!replyBtn) {
+        console.warn('[FeedEngagement] Reply button not found on comment');
+        return false;
+      }
+
+      replyBtn.click();
+      await delay(randomDelay(1000, 2000));
+
+      // Find the reply input (appears within or near the comment after clicking Reply)
+      let input = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        // Look for the reply input near the comment
+        input = safeQuerySelector(commentEl, '[role="textbox"][contenteditable="true"]')
+             || safeQuerySelector(commentEl.parentElement, '[role="textbox"][contenteditable="true"]');
+
+        // Broader fallback: the newest contenteditable in the post
+        if (!input) {
+          const allEditable = safeQuerySelectorAll(postEl, '[role="textbox"][contenteditable="true"], div[contenteditable="true"]');
+          if (allEditable.length > 0) {
+            input = allEditable[allEditable.length - 1]; // last one is likely the reply box
+          }
+        }
+
+        if (input) break;
+        await delay(500);
+      }
+
+      if (!input) {
+        console.error('[FeedEngagement] Reply input not found');
+        return false;
+      }
+
+      // Focus and type (same logic as commentOnPost)
+      input.focus();
+      input.dispatchEvent(new Event('focus', { bubbles: true }));
+      await delay(300);
+
+      // Clear existing content
+      if (input.hasAttribute('contenteditable')) {
+        document.execCommand('selectAll', false, null);
+        document.execCommand('delete', false, null);
+      }
+      await delay(200);
+
+      // Type character by character
+      input.focus();
+      for (let i = 0; i < replyText.length; i++) {
+        const char = replyText[i];
+        input.dispatchEvent(new KeyboardEvent('keydown', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true, cancelable: true }));
+        input.dispatchEvent(new KeyboardEvent('keypress', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true, cancelable: true }));
+        document.execCommand('insertText', false, char);
+        input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: char }));
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char }));
+        input.dispatchEvent(new KeyboardEvent('keyup', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true }));
+        await delay(randomDelay(50, 150));
+      }
+
+      // Fire post-typing events
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: replyText }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+      input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: replyText }));
+
+      await delay(randomDelay(800, 1500));
+
+      // Find and click submit button
+      let submitBtn = null;
+      let submitReady = false;
+
+      for (let attempt = 0; attempt < 10; attempt++) {
+        // Look for submit near the reply input
+        let parent = input.parentElement;
+        for (let depth = 0; depth < 8 && parent && parent !== postEl; depth++) {
+          const btns = safeQuerySelectorAll(parent, 'button');
+          for (const btn of btns) {
+            if (isSubmitButton(btn)) {
+              submitBtn = btn;
+              break;
+            }
+          }
+          if (submitBtn) break;
+          parent = parent.parentElement;
+        }
+
+        if (submitBtn) {
+          const isDisabled = submitBtn.disabled || submitBtn.hasAttribute('disabled');
+          const isAriaDisabled = submitBtn.getAttribute('aria-disabled') === 'true';
+
+          if (!isDisabled && !isAriaDisabled) {
+            submitReady = true;
+            break;
+          }
+
+          // Nudge the editor
+          input.focus();
+          document.execCommand('insertText', false, ' ');
+          await delay(100);
+          document.execCommand('delete', false, null);
+          input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+          await delay(100);
+          input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: replyText }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          submitBtn = null; // re-search next iteration
+        }
+
+        await delay(600);
+      }
+
+      if (!submitReady) {
+        console.error('[FeedEngagement] Reply submit button not ready');
+        return false;
+      }
+
+      // Click submit
+      submitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      await delay(300);
+      submitBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+      submitBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      await delay(50);
+      submitBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
+      submitBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+      submitBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      submitBtn.click();
+      await delay(randomDelay(1500, 2500));
+
+      // Track
+      incrementAction('reply');
+      sessionStats.replied++;
+
+      console.log('[FeedEngagement] Reply posted successfully');
+      return true;
+    } catch (err) {
+      console.error('[FeedEngagement] replyToComment error:', err.message, err.stack);
+      sessionStats.errors++;
+      return false;
+    }
+  }
+
+  /**
+   * Generate an AI reply to a comment
+   * @param {Object} post - Parent post data
+   * @param {string} commentAuthor - Comment author name
+   * @param {string} commentText - Comment text
+   * @returns {Promise<string|null>}
+   */
+  async function generateReply(post, commentAuthor, commentText) {
+    try {
+      // PRIMARY: AI generation via feedAI
+      if (window.linkedInAutoApply?.feedAI?.generateAIReply) {
+        try {
+          const reply = await window.linkedInAutoApply.feedAI.generateAIReply(post, commentAuthor, commentText);
+          if (reply) {
+            const cleaned = reply.replace(/[\r\n]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+            console.log('[FeedEngagement] AI reply generated:', cleaned);
+            return cleaned;
+          }
+        } catch (aiErr) {
+          console.warn('[FeedEngagement] AI reply generation failed:', aiErr.message);
+        }
+      }
+
+      // FALLBACK: use generic comment library (match post type)
+      const russian = isRussianText(commentText);
+      const library = russian ? COMMENT_LIBRARY_RU : COMMENT_LIBRARY;
+      const postType = detectPostType(post);
+      const typeComments = library[postType] || library.general;
+      return typeComments[Math.floor(Math.random() * typeComments.length)];
+    } catch (err) {
+      console.warn('[FeedEngagement] generateReply error:', err.message);
+      return null;
+    }
+  }
+
   // ── Auto Engagement ────────────────────────────────────────────────────
 
   /**
@@ -1152,9 +1635,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     likeHiring = true,
     likeKeywordMatches = true,
     enableComments = false,
+    enableReplies = false,
     enableFollows = false,
     maxLikes = 20,
     maxComments = 5,
+    maxReplies = 3,
     onProgress = null,
   } = {}) {
     console.log('[FeedEngagement] autoEngage called with settings:', {
@@ -1162,10 +1647,13 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       likeHiring,
       likeKeywordMatches,
       enableComments,
+      enableReplies,
       enableFollows,
       maxLikes,
       maxComments,
+      maxReplies,
       commentProbability: CONFIG.ENGAGEMENT_PROBABILITY.comment,
+      replyProbability: CONFIG.ENGAGEMENT_PROBABILITY.reply,
     });
 
     if (isEngaging) {
@@ -1178,6 +1666,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     sessionStats = {
       liked: 0,
       commented: 0,
+      replied: 0,
       followed: 0,
       skipped: 0,
       errors: 0,
@@ -1190,6 +1679,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       likeHiring,
       likeKeywordMatches,
       enableComments,
+      enableReplies,
       enableFollows,
       commentLibrarySize: Object.keys(COMMENT_LIBRARY).length,
     });
@@ -1224,7 +1714,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         }
 
         const postEl = postElements[i];
-        const post = window.linkedInAutoApply.feed.parsePost(postEl);
+        const post = await window.linkedInAutoApply.feed.parsePost(postEl, true);
 
         if (!post) {
           sessionStats.skipped++;
@@ -1333,6 +1823,40 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           });
         }
 
+        // Reply to a comment on the post
+        if (enableReplies && sessionStats.replied < maxReplies) {
+          const prob = Math.random();
+          console.log('[FeedEngagement] Reply probability:', {
+            prob,
+            threshold: CONFIG.ENGAGEMENT_PROBABILITY.reply,
+            willReply: prob <= CONFIG.ENGAGEMENT_PROBABILITY.reply,
+          });
+
+          if (prob <= CONFIG.ENGAGEMENT_PROBABILITY.reply) {
+            // Expand comments section
+            const expanded = await expandComments(postEl);
+            if (expanded) {
+              const comments = scrapeComments(postEl);
+              if (comments.length > 0) {
+                // Pick a random comment to reply to
+                const target = comments[Math.floor(Math.random() * comments.length)];
+                console.log('[FeedEngagement] Generating reply to comment by:', target.author);
+
+                const reply = await generateReply(post, target.author, target.text);
+                if (reply) {
+                  const replied = await replyToComment(postEl, target.element, reply);
+                  if (replied) {
+                    console.log('[FeedEngagement] Reply posted successfully');
+                    await delay(randomDelay(CONFIG.MIN_REPLY_DELAY, CONFIG.MAX_REPLY_DELAY));
+                  }
+                }
+              } else {
+                console.log('[FeedEngagement] No comments found to reply to');
+              }
+            }
+          }
+        }
+
         // Follow the author
         if (enableFollows) {
           const prob = Math.random();
@@ -1405,6 +1929,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     sessionStats = {
       liked: 0,
       commented: 0,
+      replied: 0,
       followed: 0,
       skipped: 0,
       errors: 0,
@@ -1424,6 +1949,10 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     findCommentButton,
     findCommentInput,
     generateComment,
+    replyToComment,
+    scrapeComments,
+    expandComments,
+    generateReply,
     followAuthor,
     findFollowButton,
 

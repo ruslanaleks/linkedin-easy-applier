@@ -1,5 +1,5 @@
-// feed/feedAI.js - AI-генерация комментариев через Qwen API
-// Поддержка Qwen 2.5/3.0/3.5+ через различные провайдеры (DashScope, OpenRouter, локальный сервер)
+// feed/feedAI.js - AI-генерация комментариев через LLM API
+// Поддержка xAI Grok 4 (по умолчанию), Qwen 2.5/3.0/3.5+, через различные провайдеры (xAI, DashScope, OpenRouter, локальный сервер)
 
 window.linkedInAutoApply = window.linkedInAutoApply || {};
 
@@ -11,10 +11,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     // Providers
     PROVIDERS: {
       DASHSCOPE: 'dashscope',      // Alibaba Cloud (официальный Qwen API)
-      OPENROUTER: 'openrouter',    // OpenRouter (доступ к Qwen)
+      OPENROUTER: 'openrouter',    // OpenRouter (доступ к Qwen, Grok)
+      XAI: 'xai',                  // xAI Grok (официальный API)
       LOCAL: 'local',              // Локальный сервер (Ollama, vLLM, etc.)
     },
-    
+
     // Models
     MODELS: {
       QWEN_2_5_72B: 'qwen-2.5-72b',
@@ -22,18 +23,22 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       QWEN_3_5_72B: 'qwen-3.5-72b',  // Рекомендуемый
       QWEN_PLUS: 'qwen-plus',
       QWEN_TURBO: 'qwen-turbo',
+      GROK_4_FAST: 'grok-4-fast',   // xAI Grok 4 Fast
+      GROK_4: 'grok-4',             // xAI Grok 4
+      GROK_BETA: 'grok-beta',       // xAI Grok Beta
     },
-    
+
     // Endpoints
     ENDPOINTS: {
       dashscope: 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions',
       openrouter: 'https://openrouter.ai/api/v1/chat/completions',
+      xai: 'https://api.x.ai/v1/chat/completions',
       local: 'http://localhost:11434/v1/chat/completions', // Ollama по умолчанию
     },
     
     // Limits
     MAX_CONTENT_LENGTH: 2000,      // Обрезать пост до 2000 символов
-    MAX_COMMENT_LENGTH: 280,       // LinkedIn limit ~280 символов
+    MAX_COMMENT_LENGTH: 80,        // Short comments: 1-8 words
     MAX_IMAGE_DESCRIPTION: 200,    // Описание картинки для контекста
     
     // Timeouts
@@ -84,6 +89,37 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
   }
 
   /**
+   * Topics to skip — commenting on these can damage professional reputation
+   */
+  const SKIP_TOPIC_PATTERNS = /\b(politic|politician|election|democrat|republican|liberal|conservative|left-wing|right-wing|congress|senate|parliament|geopolitic|sanctions|trump|biden|nato|referendum|propaganda|coup|regime|war\b|warfare|militar|army|troops|soldier|weapon|missile|drone strike|artillery|combat|invasion|occupation|ceasefire|nuclear|airstrike|casualties|bombing|conflict zone|политик|выборы|партия|санкции|пропаганда|режим|война|военн|армия|солдат|оружие|ракет|артиллери|бомбардировк|вторжение|оккупац|ядерн|конфликт|боевы|наступлени|мобилизаци|фронт)\b/i;
+
+  /**
+   * Check if post content is about a sensitive topic that should be skipped
+   */
+  function isSensitiveTopic(post) {
+    const text = (post?.content || '') + ' ' + (post?.hashtags || []).join(' ');
+    return SKIP_TOPIC_PATTERNS.test(text);
+  }
+
+  /**
+   * Priority topics — world impact & innovation get exclusive, deeper comments
+   */
+  const WORLD_IMPACT_PATTERNS = /\b(climate|sustainability|renewable|green energy|carbon|emission|global warming|clean energy|ESG|social impact|humanitarian|poverty|inequality|education access|public health|pandemic|epidemic|food security|water crisis|biodiversity|deforestation|ocean|pollution|SDG|united nations|WHO|world bank|global challenge|future of|digital divide|affordable|universal access|climate change|net zero|circular economy|impact invest|social enterprise|change.?maker|климат|устойчив|возобновляем|зелёная энергия|углерод|выбросы|глобальное потепление|социальный эффект|гуманитар|бедность|неравенство|доступ к образованию|здравоохранение|пандемия|продовольств|биоразнообразие|загрязнение|экология|углеродный след|цели развития)\b/i;
+
+  const INNOVATION_PATTERNS = /\b(innovat|disrupt|breakthrough|AI\b|artificial intelligence|machine learning|deep learning|LLM|GPT|neural|quantum|biotech|nanotech|blockchain|web3|autonomous|robotics|self-driving|CRISPR|gene editing|fusion energy|space tech|satellite|3D print|augmented reality|virtual reality|metaverse|edge computing|digital twin|no-code|low-code|open source|startup|moonshot|R&D|patent|prototype|first.of.its.kind|state.of.the.art|cutting.edge|next.gen|инновац|прорыв|искусственный интеллект|машинное обучение|нейросет|квант|биотех|блокчейн|робот|автоном|стартап|прототип|технологи|цифров)\b/i;
+
+  /**
+   * Detect if post is about a priority topic (world impact or innovation)
+   * @returns {'world_impact'|'innovation'|null}
+   */
+  function detectPriorityTopic(post) {
+    const text = (post?.content || '') + ' ' + (post?.hashtags || []).join(' ');
+    if (WORLD_IMPACT_PATTERNS.test(text)) return 'world_impact';
+    if (INNOVATION_PATTERNS.test(text)) return 'innovation';
+    return null;
+  }
+
+  /**
    * Extract key information from post for AI context
    */
   function extractPostContext(post) {
@@ -119,43 +155,164 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
   /**
    * Build prompt for Qwen
    */
-  function buildPrompt(postContext) {
-    const { author, headline, content, hashtags, mediaType, mediaCount } = postContext;
+  // Comment angle strategies — randomly picked per post to force variety
+  const COMMENT_ANGLES = [
+    'React to one specific detail from the post',
+    'Express agreement with a concrete point',
+    'Note something relatable in the post',
+    'Acknowledge the core idea briefly',
+    'Connect to a personal observation',
+    'Highlight what stands out most',
+    'Show curiosity about one aspect',
+    'Affirm the value of the insight',
+  ];
 
-    let systemPrompt = `Ты - профессиональный ассистент для написания комментариев в LinkedIn.
-Твоя задача: создавать осмысленные, релевантные и профессиональные комментарии к постам.
+  /**
+   * Detect if text is primarily Russian (Cyrillic).
+   * Strips URLs, hashtags, and @mentions before counting so that
+   * English technical terms / links don't skew the ratio.
+   */
+  function isRussianText(text) {
+    if (!text) return false;
+    const clean = text
+      .replace(/https?:\/\/\S+/g, '')
+      .replace(/#\w+/g, '')
+      .replace(/@\w+/g, '');
+    const cyrillic = (clean.match(/[\u0400-\u04FF]/g) || []).length;
+    const latin = (clean.match(/[a-zA-Z]/g) || []).length;
+    // Trigger on any meaningful Cyrillic presence (≥ 10 chars)
+    // even if Latin chars dominate (common in tech posts with English jargon)
+    return cyrillic > 10 && cyrillic > latin * 0.3;
+  }
 
-Правила:
-1. Комментарий должен быть на том же языке, что и основной контент поста
-2. Максимум ${CONFIG.MAX_COMMENT_LENGTH} символов
-3. Будь конкретным - ссылайся на детали из поста
-4. Избегай общих фраз вроде "Great post!"
-5. Добавляй ценность: инсайт, вопрос, опыт, поддержку
-6. Используй 0-2 эмодзи уместно
-7. Будь искренним и человечным
-8. Если пост на русском - пиши на русском
-9. Если пост на испанском - пиши на испанском
-10. Избегай спамных фраз`;
+  // Russian comment angles for variety
+  const COMMENT_ANGLES_RU = [
+    'Отреагируй на конкретную деталь из поста',
+    'Вырази согласие с конкретным тезисом',
+    'Отметь что-то близкое в посте',
+    'Кратко подтверди основную мысль',
+    'Свяжи с личным наблюдением',
+    'Выдели самое заметное',
+    'Покажи интерес к одному аспекту',
+    'Подтверди ценность мысли',
+  ];
 
-    let userPrompt = `Напиши профессиональный комментарий к этому LinkedIn посту:
+  // Exclusive angles for world impact topics
+  const WORLD_IMPACT_ANGLES = [
+    'Name the specific ripple effect this could trigger',
+    'Connect this to a concrete downstream consequence',
+    'Point out what most people overlook about this impact',
+    'Identify the hidden leverage point in this initiative',
+    'Note the second-order effect nobody talks about',
+    'Tie this to a real-world outcome you have seen',
+  ];
+  const WORLD_IMPACT_ANGLES_RU = [
+    'Назови конкретный каскадный эффект, который это запустит',
+    'Свяжи с реальным последствием для отрасли',
+    'Укажи что именно упускают большинство',
+    'Найди скрытый рычаг в этой инициативе',
+    'Отметь эффект второго порядка',
+    'Привяжи к реальному результату, который наблюдал',
+  ];
 
-**Автор:** ${author}${headline ? ` (${headline})` : ''}
+  // Exclusive angles for innovation topics
+  const INNOVATION_ANGLES = [
+    'Name the specific constraint this technology removes',
+    'Point out what becomes possible now that was not before',
+    'Identify the non-obvious application of this',
+    'Connect to a concrete problem this solves differently',
+    'Note the inflection point this represents',
+    'Highlight the underestimated part of this approach',
+  ];
+  const INNOVATION_ANGLES_RU = [
+    'Назови конкретное ограничение, которое эта технология снимает',
+    'Укажи что теперь стало возможным',
+    'Найди неочевидное применение',
+    'Свяжи с конкретной проблемой, которую это решает иначе',
+    'Отметь точку перелома, которую это означает',
+    'Выдели недооценённую сторону подхода',
+  ];
 
-**Контент поста:**
-${content}
+  function buildPrompt(postContext, priorityTopic) {
+    const { author, headline, content, hashtags, mediaType, mediaCount, mediaDescription } = postContext;
 
-${hashtags.length > 0 ? `**Хэштеги:** ${hashtags.join(' ')}` : ''}
+    // Detect language
+    const isRussian = isRussianText(content);
 
-${mediaType ? `**Медиа:** ${mediaType} (${mediaCount} файл(ов))` : '**Медиа:** нет'}
+    // Pick angle based on topic type
+    let angles;
+    if (priorityTopic === 'world_impact') {
+      angles = isRussian ? WORLD_IMPACT_ANGLES_RU : WORLD_IMPACT_ANGLES;
+    } else if (priorityTopic === 'innovation') {
+      angles = isRussian ? INNOVATION_ANGLES_RU : INNOVATION_ANGLES;
+    } else {
+      angles = isRussian ? COMMENT_ANGLES_RU : COMMENT_ANGLES;
+    }
+    const angle = angles[Math.floor(Math.random() * angles.length)];
 
-**Требования к комментарию:**
-- Язык: определи по основному контенту
-- Стиль: профессиональный, но дружелюбный
-- Длина: 1-3 предложения, макс ${CONFIG.MAX_COMMENT_LENGTH} символов
-- Добавь 0-2 уместных эмодзи
-- Будь конкретным, ссылайся на детали поста
+    // Random style modifier
+    const stylesEN = ['casual', 'warm', 'thoughtful', 'genuine', 'calm'];
+    const stylesRU = ['непринуждённо', 'тепло', 'вдумчиво', 'искренне', 'спокойно'];
+    const styles = isRussian ? stylesRU : stylesEN;
+    const style = styles[Math.floor(Math.random() * styles.length)];
 
-Напиши только текст комментария, без кавычек и объяснений.`;
+    // Exclusive-comment rule for priority topics
+    const exclusiveRuleEN = priorityTopic
+      ? `\n11. CRITICAL: Your comment must offer a unique, non-obvious perspective. Think like a domain expert. Never state the obvious. Name a specific mechanism, consequence, or connection that adds NEW insight beyond what the post says.`
+      : '';
+    const exclusiveRuleRU = priorityTopic
+      ? `\n11. КРИТИЧНО: Комментарий обязан содержать уникальную, неочевидную мысль. Думай как эксперт в теме. Не повторяй очевидное. Назови конкретный механизм, последствие или связь, которая добавляет НОВЫЙ инсайт к тому, что сказано в посте.`
+      : '';
+
+    let systemPrompt = isRussian
+      ? `Ты профессионал, пишущий короткие серьёзные комментарии в LinkedIn на русском.
+
+Строгие правила:
+1. ТОЛЬКО на русском языке, ТОЛЬКО кириллицей. Никакой латиницы и транслитерации
+2. От 1 до 8 слов, не больше
+3. Из знаков препинания используй ТОЛЬКО точку и запятую. Никаких "!", "?", ":", ";", тире, длинных тире, кавычек
+4. Никаких эмодзи
+5. Не используй шаблоны: "Отличный пост", "Спасибо", "Согласен", "Класс", "Огонь", "Топ"
+6. Не начинай с "Это" или с имени автора
+7. Комментарий ОБЯЗАН ссылаться на конкретный факт, деталь или мысль из текста поста. НЕ придумывай темы, которых нет в посте
+8. Тон: ${style}, профессиональный
+9. Подход: ${angle}
+10. Выводи одну строку без переносов${exclusiveRuleRU}`
+      : `You are a professional writing short LinkedIn comments. Be serious and substantive.
+
+Strict rules:
+1. CRITICAL: Write in the EXACT SAME language and script as the post. If the post is in Russian (Cyrillic), reply ONLY in Russian Cyrillic. If in English, reply in English. NEVER transliterate
+2. 1 to 8 words only, no more
+3. Only use "." and "," as punctuation. NO "!", "?", ":", ";", dashes, em dashes, quotes
+4. No emojis
+5. NEVER use generic phrases: "Great post", "Thanks for sharing", "Love this", "Well said"
+6. NEVER start with "This" or the author's name
+7. Your comment MUST reference a specific detail, fact, or idea from the post content. Do NOT invent topics not mentioned in the post
+8. Tone: ${style}, professional
+9. Approach: ${angle}
+10. Output a single line, no line breaks${exclusiveRuleEN}`;
+
+    let userPrompt = isRussian
+      ? `Пост от ${author}${headline ? ` (${headline})` : ''}:
+
+"${content}"
+
+${hashtags.length > 0 ? `Хештеги: ${hashtags.join(' ')}` : ''}
+${mediaType ? `Прикреплено: ${mediaType} (${mediaCount})` : ''}
+${mediaDescription ? `На изображении: ${mediaDescription}` : ''}
+
+Напиши ОДИН комментарий на русском кириллицей, от 1 до 8 слов. Только точки и запятые. Без эмодзи. Без латиницы. Подход: ${angle}.
+Выведи только текст комментария.`
+      : `Post by ${author}${headline ? ` (${headline})` : ''}:
+
+"${content}"
+
+${hashtags.length > 0 ? `Hashtags: ${hashtags.join(' ')}` : ''}
+${mediaType ? `Attached: ${mediaType} (${mediaCount})` : ''}
+${mediaDescription ? `Image shows: ${mediaDescription}` : ''}
+
+Write ONE comment, 1 to 8 words. Only "." and "," punctuation. No emojis. Approach: ${angle}.
+Output only the comment text.`;
 
     return { systemPrompt, userPrompt };
   }
@@ -194,6 +351,9 @@ ${imageUrl}
         headers['HTTP-Referer'] = 'https://linkedin-applier.com';
         headers['X-Title'] = 'LinkedIn Auto Apply';
         break;
+      case CONFIG.PROVIDERS.XAI:
+        headers['Authorization'] = `Bearer ${apiKey}`;
+        break;
       case CONFIG.PROVIDERS.LOCAL:
         // Local servers typically don't need auth
         if (apiKey) {
@@ -206,20 +366,24 @@ ${imageUrl}
   }
 
   /**
-   * Call Qwen API
+   * Call LLM API (xAI Grok, Qwen, or local)
    */
-  async function callQwenAPI(messages, settings) {
+  async function callLLMAPI(messages, settings) {
     const { provider, apiKey, model, endpoint } = settings;
 
     const requestBody = {
-      model: model || CONFIG.MODELS.QWEN_3_5_72B,
+      model: model || CONFIG.MODELS.GROK_4_FAST,
       messages: messages,
       temperature: 0.7,
-      max_tokens: 150,
+      max_tokens: 200,
       top_p: 0.9,
-      frequency_penalty: 0.3,
-      presence_penalty: 0.3,
     };
+
+    // xAI Grok does not support frequency_penalty / presence_penalty
+    if (provider !== CONFIG.PROVIDERS.XAI) {
+      requestBody.frequency_penalty = 0.3;
+      requestBody.presence_penalty = 0.3;
+    }
 
     const apiEndpoint = endpoint || CONFIG.ENDPOINTS[provider];
 
@@ -243,15 +407,18 @@ ${imageUrl}
     }
 
     const data = await response.json();
-    
+
     // Extract response based on provider format
-    const content = data.choices?.[0]?.message?.content;
-    
+    let content = data.choices?.[0]?.message?.content;
+
     if (!content) {
       throw new Error('Empty response from API');
     }
 
-    return content.trim();
+    // Strip xAI Grok <think>...</think> blocks that precede the actual comment
+    content = content.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+    return content;
   }
 
   /**
@@ -274,7 +441,7 @@ ${imageUrl}
         }
       ];
 
-      const description = await callQwenAPI(messages, settings);
+      const description = await callLLMAPI(messages, settings);
       console.log('[FeedAI] Image analysis complete:', description.slice(0, 100) + '...');
       
       return description;
@@ -290,18 +457,16 @@ ${imageUrl}
   async function generateAIComment(post, options = {}) {
     const settings = apiSettings || await loadAPISettings();
 
-    // Check if AI is enabled
-    if (!settings?.enableAI) {
-      console.log('[FeedAI] AI comments disabled, using fallback');
+    // Check if AI is explicitly disabled
+    if (settings?.enableAI === false) {
+      console.log('[FeedAI] AI comments explicitly disabled, using fallback');
       return null;
     }
 
-    // Check cache
-    const contentHash = generateContentHash(post?.content);
-    const cached = commentCache.get(contentHash);
-    if (cached && Date.now() - cached.timestamp < CONFIG.CACHE_TTL_MS) {
-      console.log('[FeedAI] Using cached comment');
-      return cached.comment;
+    // Check that API key is configured
+    if (!settings?.apiKey) {
+      console.warn('[FeedAI] No API key configured. Set your xAI API key in Feed Settings → AI Settings.');
+      return null;
     }
 
     try {
@@ -314,8 +479,21 @@ ${imageUrl}
         hashtagsCount: postContext.hashtags.length,
       });
 
+      // Refuse to generate when there is no real content — prevents hallucinated
+      // comments about "blank pages" / "emptiness"
+      if (postContext.content.length < 20 && !postContext.hasMedia && postContext.hashtags.length === 0) {
+        console.warn('[FeedAI] Post has no meaningful content, skipping AI generation');
+        return null;
+      }
+
+      // Skip political and military topics — commenting can damage professional reputation
+      if (isSensitiveTopic(post)) {
+        console.log('[FeedAI] Sensitive topic (politics/military) detected, skipping');
+        return null;
+      }
+
       // Analyze image if present and enabled
-      if (postContext.hasMedia && postContext.mediaType === 'image' && 
+      if (postContext.hasMedia && postContext.mediaType === 'image' &&
           post.media?.images?.[0] && options.analyzeImage !== false) {
         const imageDesc = await analyzeImage(post.media.images[0], settings);
         if (imageDesc) {
@@ -323,8 +501,14 @@ ${imageUrl}
         }
       }
 
+      // Detect priority topic for exclusive comment generation
+      const priorityTopic = detectPriorityTopic(post);
+      if (priorityTopic) {
+        console.log('[FeedAI] Priority topic detected:', priorityTopic);
+      }
+
       // Build prompt
-      const { systemPrompt, userPrompt } = buildPrompt(postContext);
+      const { systemPrompt, userPrompt } = buildPrompt(postContext, priorityTopic);
 
       const messages = [
         { role: 'system', content: systemPrompt },
@@ -335,7 +519,7 @@ ${imageUrl}
       let comment = null;
       for (let attempt = 0; attempt <= CONFIG.RETRY_COUNT; attempt++) {
         try {
-          comment = await callQwenAPI(messages, settings);
+          comment = await callLLMAPI(messages, settings);
           break;
         } catch (err) {
           console.warn(`[FeedAI] Attempt ${attempt + 1} failed:`, err.message);
@@ -353,20 +537,41 @@ ${imageUrl}
       comment = comment
         .replace(/^["']|["']$/g, '')  // Remove quotes
         .replace(/^\s*-\s*/, '')       // Remove bullet points
+        .replace(/[\r\n]+/g, ' ')      // Flatten newlines into spaces (no blank lines in reply)
+        .replace(/[\u2014\u2013\u2012\u2015—–-]{2,}/g, ',')  // Long dashes to comma
+        .replace(/[!?:;()\[\]{}"'«»""'']/g, '')               // Strip forbidden punctuation
+        .replace(/[\u{1F600}-\u{1F9FF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1FA00}-\u{1FAFF}\u{200D}\u{20E3}]/gu, '')  // Strip emojis
+        .replace(/\s{2,}/g, ' ')       // Collapse whitespace
         .trim();
+
+      // Enforce word limit: keep only first 8 words
+      const words = comment.split(/\s+/);
+      if (words.length > 8) {
+        comment = words.slice(0, 8).join(' ');
+      }
+
+      // Ensure trailing punctuation is only . or ,
+      comment = comment.replace(/[.,]+$/, '').trim();
 
       // Validate length
       if (comment.length > CONFIG.MAX_COMMENT_LENGTH) {
         comment = truncate(comment, CONFIG.MAX_COMMENT_LENGTH);
       }
 
-      // Cache result
-      commentCache.set(contentHash, { comment, timestamp: Date.now() });
-      
-      // Cleanup cache
-      if (commentCache.size > CONFIG.MAX_CACHE_SIZE) {
-        const oldestKey = commentCache.keys().next().value;
-        if (oldestKey) commentCache.delete(oldestKey);
+      // Reject obvious word fragments (e.g. "onality", "ement", "ption")
+      const FRAGMENT_RE = /^(tion|tions|sion|sions|ment|ments|ness|ality|ility|ance|ence|ious|eous|nable|nible|ative|ution|ption|ction|onality|uality|ement|ament|ling|ding|ning|ying|ering|ting|ical|ular|ular)$/i;
+      const commentWords = comment.split(/\s+/);
+      if (commentWords.some(w => w.length >= 3 && FRAGMENT_RE.test(w))) {
+        console.warn('[FeedAI] Rejected comment with word fragment:', comment);
+        return null;
+      }
+
+      // Reject language mismatch: Russian post must get Cyrillic reply
+      const postIsRussian = isRussianText(postContext.content);
+      const commentHasCyrillic = /[\u0400-\u04FF]/.test(comment);
+      if (postIsRussian && !commentHasCyrillic) {
+        console.warn('[FeedAI] Rejected comment: Russian post got Latin reply:', comment);
+        return null;
       }
 
       console.log('[FeedAI] Generated comment:', comment);
@@ -382,27 +587,38 @@ ${imageUrl}
    * Load API settings from storage
    */
   async function loadAPISettings() {
+    // Defaults: xAI Grok 4 Fast, AI enabled
+    const defaults = {
+      enableAI: true,
+      provider: CONFIG.PROVIDERS.XAI,
+      model: CONFIG.MODELS.GROK_4_FAST,
+      endpoint: CONFIG.ENDPOINTS.xai,
+      apiKey: '',
+      analyzeImages: true,
+    };
+
     try {
       if (typeof chrome === 'undefined' || !chrome.storage) {
         console.warn('[FeedAI] chrome.storage not available');
-        return null;
+        apiSettings = defaults;
+        return apiSettings;
       }
 
       const data = await chrome.storage.local.get('feedAISettings');
-      apiSettings = data?.feedAISettings || null;
-      
-      if (apiSettings) {
-        console.log('[FeedAI] Settings loaded:', {
-          provider: apiSettings.provider,
-          model: apiSettings.model,
-          enableAI: apiSettings.enableAI,
-        });
-      }
-      
+      // Merge stored settings over defaults so enableAI=true unless explicitly disabled
+      apiSettings = { ...defaults, ...(data?.feedAISettings || {}) };
+
+      console.log('[FeedAI] Settings loaded:', {
+        provider: apiSettings.provider,
+        model: apiSettings.model,
+        enableAI: apiSettings.enableAI,
+      });
+
       return apiSettings;
     } catch (err) {
       console.warn('[FeedAI] Failed to load settings:', err.message);
-      return null;
+      apiSettings = defaults;
+      return apiSettings;
     }
   }
 
@@ -436,7 +652,7 @@ ${imageUrl}
         { role: 'user', content: 'Напиши "OK" если получаешь это сообщение.' }
       ];
 
-      const response = await callQwenAPI(testMessages, settings);
+      const response = await callLLMAPI(testMessages, settings);
       return {
         success: true,
         message: `Connected successfully. Response: "${response}"`,
@@ -467,6 +683,15 @@ ${imageUrl}
           { value: 'qwen/qwen-3.5-72b-instruct', label: 'Qwen 3.5 72B Instruct' },
           { value: 'qwen/qwen-3-72b-instruct', label: 'Qwen 3 72B Instruct' },
           { value: 'qwen/qwen-2.5-72b-instruct', label: 'Qwen 2.5 72B Instruct' },
+          { value: 'x-ai/grok-4-fast', label: 'xAI Grok 4 Fast ⚡' },
+          { value: 'x-ai/grok-4', label: 'xAI Grok 4' },
+          { value: 'x-ai/grok-beta', label: 'xAI Grok Beta' },
+        ];
+      case CONFIG.PROVIDERS.XAI:
+        return [
+          { value: CONFIG.MODELS.GROK_4_FAST, label: 'Grok 4 Fast ⚡ (Recommended)' },
+          { value: CONFIG.MODELS.GROK_4, label: 'Grok 4' },
+          { value: CONFIG.MODELS.GROK_BETA, label: 'Grok Beta' },
         ];
       case CONFIG.PROVIDERS.LOCAL:
         return [
@@ -503,30 +728,227 @@ ${imageUrl}
   // Load settings on module load
   loadAPISettings();
 
+  // ── Reply Generation ──────────────────────────────────────────────────
+
+  // Reply angle strategies — randomly picked per comment to force variety
+  const REPLY_ANGLES = [
+    'Agree with the commenter and add a small detail',
+    'Build on the commenter\'s point briefly',
+    'Acknowledge their perspective concisely',
+    'Connect their idea to a related observation',
+    'Affirm their point with a concrete example reference',
+    'Note what resonates in their comment',
+  ];
+
+  const REPLY_ANGLES_RU = [
+    'Согласись с комментатором и добавь деталь',
+    'Развей мысль комментатора кратко',
+    'Подтверди их точку зрения',
+    'Свяжи их идею с наблюдением',
+    'Подтверди мысль ссылкой на конкретный пример',
+    'Отметь что откликается в их комментарии',
+  ];
+
+  /**
+   * Build prompt for reply to a comment
+   */
+  function buildReplyPrompt(postContext, commentAuthor, commentText) {
+    const isRussian = isRussianText(commentText) || isRussianText(postContext.content);
+
+    const angles = isRussian ? REPLY_ANGLES_RU : REPLY_ANGLES;
+    const angle = angles[Math.floor(Math.random() * angles.length)];
+
+    const stylesEN = ['casual', 'warm', 'thoughtful', 'genuine', 'calm'];
+    const stylesRU = ['непринуждённо', 'тепло', 'вдумчиво', 'искренне', 'спокойно'];
+    const styles = isRussian ? stylesRU : stylesEN;
+    const style = styles[Math.floor(Math.random() * styles.length)];
+
+    let systemPrompt = isRussian
+      ? `Ты профессионал, пишущий короткие ответы на комментарии в LinkedIn на русском.
+
+Строгие правила:
+1. ТОЛЬКО на русском языке, ТОЛЬКО кириллицей. Никакой латиницы и транслитерации
+2. От 1 до 8 слов, не больше
+3. Из знаков препинания используй ТОЛЬКО точку и запятую. Никаких "!", "?", ":", ";", тире, длинных тире, кавычек
+4. Никаких эмодзи
+5. Не используй шаблоны: "Отличный комментарий", "Спасибо", "Согласен", "Класс", "Точно"
+6. Не начинай с имени комментатора или с "Это"
+7. Ответ ОБЯЗАН ссылаться на конкретную мысль из комментария. НЕ придумывай темы, которых нет
+8. Тон: ${style}, профессиональный
+9. Подход: ${angle}
+10. Выводи одну строку без переносов`
+      : `You are a professional writing short replies to LinkedIn comments. Be serious and substantive.
+
+Strict rules:
+1. CRITICAL: Write in the EXACT SAME language and script as the comment. If the comment is in Russian (Cyrillic), reply ONLY in Russian Cyrillic. If in English, reply in English. NEVER transliterate
+2. 1 to 8 words only, no more
+3. Only use "." and "," as punctuation. NO "!", "?", ":", ";", dashes, em dashes, quotes
+4. No emojis
+5. NEVER use generic phrases: "Great point", "Thanks for sharing", "Love this", "Well said", "Exactly"
+6. NEVER start with the commenter's name or "This"
+7. Your reply MUST reference a specific detail or idea from the comment. Do NOT invent topics not mentioned
+8. Tone: ${style}, professional
+9. Approach: ${angle}
+10. Output a single line, no line breaks`;
+
+    let userPrompt = isRussian
+      ? `Исходный пост от ${postContext.author}:
+"${truncate(postContext.content, 500)}"
+
+Комментарий от ${commentAuthor}:
+"${truncate(commentText, 500)}"
+
+Напиши ОДИН ответ на комментарий на русском кириллицей, от 1 до 8 слов. Только точки и запятые. Без эмодзи. Без латиницы. Подход: ${angle}.
+Выведи только текст ответа.`
+      : `Original post by ${postContext.author}:
+"${truncate(postContext.content, 500)}"
+
+Comment by ${commentAuthor}:
+"${truncate(commentText, 500)}"
+
+Write ONE reply to the comment, 1 to 8 words. Only "." and "," punctuation. No emojis. Approach: ${angle}.
+Output only the reply text.`;
+
+    return { systemPrompt, userPrompt };
+  }
+
+  /**
+   * Generate AI reply to a comment
+   * @param {Object} post - Parent post data
+   * @param {string} commentAuthor - Comment author name
+   * @param {string} commentText - Comment text to reply to
+   * @returns {Promise<string|null>}
+   */
+  async function generateAIReply(post, commentAuthor, commentText) {
+    const settings = apiSettings || await loadAPISettings();
+
+    if (settings?.enableAI === false) {
+      console.log('[FeedAI] AI replies disabled');
+      return null;
+    }
+
+    if (!settings?.apiKey) {
+      console.warn('[FeedAI] No API key configured for replies');
+      return null;
+    }
+
+    try {
+      const postContext = extractPostContext(post);
+
+      // Skip if comment is too short to reply meaningfully
+      if ((commentText || '').trim().length < 10) {
+        console.log('[FeedAI] Comment too short to reply to');
+        return null;
+      }
+
+      // Skip sensitive topics
+      if (isSensitiveTopic(post) || SKIP_TOPIC_PATTERNS.test(commentText)) {
+        console.log('[FeedAI] Sensitive topic in comment, skipping reply');
+        return null;
+      }
+
+      const { systemPrompt, userPrompt } = buildReplyPrompt(postContext, commentAuthor, commentText);
+
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ];
+
+      // Call API with retries
+      let reply = null;
+      for (let attempt = 0; attempt <= CONFIG.RETRY_COUNT; attempt++) {
+        try {
+          reply = await callLLMAPI(messages, settings);
+          break;
+        } catch (err) {
+          console.warn(`[FeedAI] Reply attempt ${attempt + 1} failed:`, err.message);
+          if (attempt < CONFIG.RETRY_COUNT) {
+            await delay(CONFIG.RETRY_DELAY * (attempt + 1));
+          }
+        }
+      }
+
+      if (!reply) {
+        throw new Error('All API attempts failed for reply');
+      }
+
+      // Clean up reply (same rules as comments)
+      reply = reply
+        .replace(/^["']|["']$/g, '')
+        .replace(/^\s*-\s*/, '')
+        .replace(/[\r\n]+/g, ' ')
+        .replace(/[\u2014\u2013\u2012\u2015—–-]{2,}/g, ',')
+        .replace(/[!?:;()\[\]{}"'«»""'']/g, '')
+        .replace(/[\u{1F600}-\u{1F9FF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1FA00}-\u{1FAFF}\u{200D}\u{20E3}]/gu, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+
+      // Enforce word limit
+      const words = reply.split(/\s+/);
+      if (words.length > 8) {
+        reply = words.slice(0, 8).join(' ');
+      }
+
+      // Ensure trailing punctuation is only . or ,
+      reply = reply.replace(/[.,]+$/, '').trim();
+
+      if (reply.length > CONFIG.MAX_COMMENT_LENGTH) {
+        reply = truncate(reply, CONFIG.MAX_COMMENT_LENGTH);
+      }
+
+      // Reject word fragments
+      const FRAGMENT_RE = /^(tion|tions|sion|sions|ment|ments|ness|ality|ility|ance|ence|ious|eous|nable|nible|ative|ution|ption|ction|onality|uality|ement|ament|ling|ding|ning|ying|ering|ting|ical|ular|ular)$/i;
+      const replyWords = reply.split(/\s+/);
+      if (replyWords.some(w => w.length >= 3 && FRAGMENT_RE.test(w))) {
+        console.warn('[FeedAI] Rejected reply with word fragment:', reply);
+        return null;
+      }
+
+      // Reject language mismatch
+      const commentIsRussian = isRussianText(commentText);
+      const replyHasCyrillic = /[\u0400-\u04FF]/.test(reply);
+      if (commentIsRussian && !replyHasCyrillic) {
+        console.warn('[FeedAI] Rejected reply: Russian comment got Latin reply:', reply);
+        return null;
+      }
+
+      console.log('[FeedAI] Generated reply:', reply);
+      return reply;
+
+    } catch (err) {
+      console.error('[FeedAI] generateAIReply error:', err.message);
+      throw err;
+    }
+  }
+
   // ── Public API ─────────────────────────────────────────────────────────
 
   window.linkedInAutoApply.feedAI = {
     // Core functions
     generateAIComment,
+    generateAIReply,
     analyzeImage,
-    
+
     // Settings
     loadAPISettings,
     saveAPISettings,
     testAPIConnection,
-    
+
     // Cache
     clearCache,
     getCacheStats,
-    
+
     // Utils
     getAvailableModels,
     extractPostContext,
     buildPrompt,
-    
+    buildReplyPrompt,
+    isSensitiveTopic,
+    detectPriorityTopic,
+
     // Config
     getConfig: () => ({ ...CONFIG }),
-    
+
     // State
     isInitialized: () => isInitialized,
   };
