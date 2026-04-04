@@ -75,6 +75,57 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     `,
   };
 
+  // ── Drag Helper ────────────────────────────────────────────────────────
+
+  /**
+   * Make a panel draggable by its header.
+   * Clears the centering transform on first drag so top/left work correctly.
+   */
+  function makeDraggable(panel, handle) {
+    let isDragging = false;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    handle.style.cursor = 'grab';
+
+    handle.addEventListener('mousedown', (e) => {
+      // Ignore clicks on buttons inside the header (e.g. close)
+      if (e.target.closest('button')) return;
+
+      isDragging = true;
+      handle.style.cursor = 'grabbing';
+
+      // On first drag, convert centered position to explicit top/left
+      if (panel.style.transform.includes('translate')) {
+        const rect = panel.getBoundingClientRect();
+        panel.style.top = rect.top + 'px';
+        panel.style.left = rect.left + 'px';
+        panel.style.transform = 'none';
+      }
+
+      const rect = panel.getBoundingClientRect();
+      offsetX = e.clientX - rect.left;
+      offsetY = e.clientY - rect.top;
+
+      e.preventDefault();
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const x = Math.max(0, Math.min(e.clientX - offsetX, window.innerWidth - panel.offsetWidth));
+      const y = Math.max(0, Math.min(e.clientY - offsetY, window.innerHeight - 40));
+      panel.style.left = x + 'px';
+      panel.style.top = y + 'px';
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (isDragging) {
+        isDragging = false;
+        handle.style.cursor = 'grab';
+      }
+    });
+  }
+
   // ── Button Creation ────────────────────────────────────────────────────
 
   /**
@@ -265,6 +316,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         likeKeywordMatches: settings.likeKeywordMatches,
         enableComments: settings.enableComments,
         enableReplies: settings.enableReplies,
+        replyToThreads: settings.replyToThreads,
         enableFollows: settings.enableFollows,
         maxLikes: settings.maxLikes,
         maxComments: settings.maxComments,
@@ -278,11 +330,18 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
             updateProgressBar((progress.scrollIteration / progress.totalScrolls) * 100);
           } else if (progress.phase === 'engaging') {
             const rateStatus = progress.rateLimits;
-            updateProgress(
+            let statusLine =
               `💬 Processing ${progress.currentPost}/${progress.totalPosts}... ` +
-              `❤️ ${progress.stats.liked} | 💬 ${progress.stats.commented} | 🔁 ${progress.stats.replied} | ➕ ${progress.stats.followed}`
+              `❤️ ${progress.stats.liked} | 💬 ${progress.stats.commented} | 🔁 ${progress.stats.replied} | ➕ ${progress.stats.followed}`;
+            if (progress.waiting) {
+              statusLine += `\n⏳ ${progress.waiting}`;
+            }
+            updateProgress(statusLine);
+            updateProgressBar(
+              progress.totalPosts > 0
+                ? (progress.currentPost / progress.totalPosts) * 100
+                : 0
             );
-            updateProgressBar((progress.currentPost / progress.totalPosts) * 100);
             updateRateLimitStatus(rateStatus);
           }
         },
@@ -313,11 +372,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       likeHiring: true,
       likeKeywordMatches: true,
       enableComments: true, // Enable comments by default (now has library)
-      enableReplies: false,
+      enableReplies: true,  // Enable replies by default (AI or library fallback)
+      replyToThreads: true, // Reply to people who responded to your comments
       enableFollows: false,
-      maxLikes: 20,
-      maxComments: 10,
-      maxReplies: 3,
+      maxLikes: 30,
+      maxComments: 15,
+      maxReplies: 8,
     };
 
     try {
@@ -370,6 +430,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     header.appendChild(closeBtn);
 
     analysisPanel.appendChild(header);
+    makeDraggable(analysisPanel, header);
 
     // Body
     const body = document.createElement('div');
@@ -441,6 +502,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         <strong>⏱️ Rate Limits:</strong><br>
         Likes: ${rateStatus.likes.hourly} (hour) | ${rateStatus.likes.daily} (day)<br>
         Comments: ${rateStatus.comments.hourly} (hour) | ${rateStatus.comments.daily} (day)<br>
+        Replies: ${rateStatus.replies?.hourly || '0'} (hour) | ${rateStatus.replies?.daily || '0'} (day)<br>
         Follows: ${rateStatus.follows.hourly} (hour) | ${rateStatus.follows.daily} (day)<br>
         <small>Next hourly reset: ${new Date(rateStatus.nextReset).toLocaleTimeString()}</small>
       </div>
@@ -472,6 +534,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     header.appendChild(closeBtn);
 
     analysisPanel.appendChild(header);
+    makeDraggable(analysisPanel, header);
 
     // Body
     const body = document.createElement('div');
@@ -637,6 +700,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     header.appendChild(closeBtn);
 
     analysisPanel.appendChild(header);
+    makeDraggable(analysisPanel, header);
 
     // Body
     const body = document.createElement('div');
@@ -676,6 +740,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         Enable auto-replies to comments 💬 (AI-generated via Grok)
       </label>
 
+      <label style="display: block; margin: 12px 0 12px 24px; font-size: 14px; line-height: 1.5; color: #555;">
+        <input type="checkbox" id="setting-reply-threads" ${settings.replyToThreads ? 'checked' : ''}
+          style="width: 16px; height: 16px; vertical-align: middle; margin-right: 6px;">
+        Reply to conversation threads 🔄 (respond when someone replies to YOUR comments)
+      </label>
+
       <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
         <input type="checkbox" id="setting-enable-follows" ${settings.enableFollows ? 'checked' : ''}
           style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
@@ -699,7 +769,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
         Max replies per session:
         <input type="number" id="setting-max-replies" value="${settings.maxReplies}"
-          min="0" max="10" style="margin-left: 10px; padding: 6px 10px; width: 70px; font-size: 15px;">
+          min="0" max="15" style="margin-left: 10px; padding: 6px 10px; width: 70px; font-size: 15px;">
       </label>
 
       <h3 style="margin: 22px 0 14px 0; color: #333; font-size: 17px;">🤖 AI Comments (xAI Grok)</h3>
@@ -819,10 +889,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       likeKeywordMatches: document.getElementById('setting-like-keyword')?.checked || false,
       enableComments: document.getElementById('setting-enable-comments')?.checked || false,
       enableReplies: document.getElementById('setting-enable-replies')?.checked || false,
+      replyToThreads: document.getElementById('setting-reply-threads')?.checked || false,
       enableFollows: document.getElementById('setting-enable-follows')?.checked || false,
-      maxLikes: parseInt(document.getElementById('setting-max-likes')?.value || '15', 10),
-      maxComments: parseInt(document.getElementById('setting-max-comments')?.value || '5', 10),
-      maxReplies: parseInt(document.getElementById('setting-max-replies')?.value || '3', 10),
+      maxLikes: parseInt(document.getElementById('setting-max-likes')?.value || '30', 10),
+      maxComments: parseInt(document.getElementById('setting-max-comments')?.value || '15', 10),
+      maxReplies: parseInt(document.getElementById('setting-max-replies')?.value || '8', 10),
     };
 
     // Save AI settings

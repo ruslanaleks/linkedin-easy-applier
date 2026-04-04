@@ -19,12 +19,25 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       'únete a nuestro equipo', 'puesto abierto',
       '#hiring', '#opentowork', '#jobalert', '#nowhiring',
     ],
-    // Selector strategies in priority order
+    // Direct post-container selectors (most stable — LinkedIn rarely changes data-urn)
+    POST_CONTAINER_SELECTORS: [
+      'div[data-urn^="urn:li:activity"]',
+      'div[data-urn^="urn:li:ugcPost"]',
+      'div[data-urn^="urn:li:aggregate"]',
+      '.feed-shared-update-v2',
+      '[data-id][class*="feed"]',
+    ],
+    // Child-element selector strategies (fallback — find a child then walk up)
     SELECTOR_STRATEGIES: [
+      { name: 'main-card', selector: '[data-testid="main-feed-activity-card"]' },
       { name: 'data-testid', selector: '[data-testid="expandable-text-box"]' },
+      { name: 'ad-preview', selector: '[data-ad-preview="message"]' },
       { name: 'aria-profile', selector: '[aria-label*="Profile"]' },
       { name: 'componentkey', selector: '[componentkey^="auto-component-"]' },
       { name: 'reaction-count', selector: '[aria-label*="reaction"]' },
+      { name: 'feed-text', selector: '.feed-shared-text' },
+      { name: 'break-words', selector: '.break-words' },
+      { name: 'update-text', selector: '.update-components-text' },
     ],
     // Scraping limits
     MAX_SCROLL_COUNT: 10,
@@ -70,7 +83,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    * @param {string} [componentkey]
    * @returns {string}
    */
-  function generatePostId(author, content, componentkey = null) {
+  function generatePostId(author, content, componentkey = null, dataUrn = null) {
+    // Prefer data-urn (most stable, globally unique)
+    if (dataUrn) {
+      return dataUrn;
+    }
     if (componentkey && componentkey.startsWith('auto-component-')) {
       return componentkey;
     }
@@ -264,10 +281,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
   function findFeedContainer() {
     const strategies = [
       () => document.querySelector('[data-testid="mainFeed"]'),
+      () => document.querySelector('div.scaffold-layout__main'),
+      () => document.querySelector('div.scaffold-layout__list'),
       () => document.querySelector('main'),
       () => document.querySelector('[role="main"]'),
       () => document.querySelector('.feed-container'),
-      () => document.querySelector('div.scaffold-layout__list'),
+      () => document.querySelector('.core-rail'),
     ];
 
     for (const strategy of strategies) {
@@ -315,9 +334,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     el = child;
     depth = 0;
     while (el && el !== feedRoot && depth < maxDepth) {
-      if (safeGetAttr(el, 'data-urn') || safeGetAttr(el, 'data-id') ||
+      const urn = safeGetAttr(el, 'data-urn') || '';
+      if ((urn.includes('urn:li:activity') || urn.includes('urn:li:ugcPost') || urn.includes('urn:li:aggregate')) ||
+          safeGetAttr(el, 'data-id') ||
           el.classList?.contains('feed-shared-update-v2') ||
-          el.classList?.contains('update-components')) {
+          el.classList?.contains('update-components') ||
+          safeGetAttr(el, 'data-testid')?.includes('feed-activity-card')) {
         return el;
       }
       el = el.parentElement;
@@ -364,18 +386,50 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       return [];
     }
 
-    // Try each selector strategy
+    // Strategy 1: Direct post-container selectors (most reliable)
+    for (const selector of CONFIG.POST_CONTAINER_SELECTORS) {
+      try {
+        const elements = safeQuerySelectorAll(feed, selector);
+        if (elements.length > 0) {
+          console.log(`[FeedScraper] Found ${elements.length} posts via direct selector: ${selector}`);
+          return dedupePostRoots(elements);
+        }
+      } catch (err) {
+        console.warn(`[FeedScraper] Direct selector ${selector} failed:`, err.message);
+      }
+    }
+
+    // Strategy 2: Child-element selectors — find a child then walk up to post root
     for (const { name, selector } of CONFIG.SELECTOR_STRATEGIES) {
       try {
         const elements = safeQuerySelectorAll(feed, selector);
         if (elements.length > 0) {
-          console.log(`[FeedScraper] Found ${elements.length} posts via ${name} strategy`);
+          console.log(`[FeedScraper] Found ${elements.length} posts via child strategy: ${name}`);
           const roots = dedupePostRoots(elements.map(el => findPostRoot(el, feed)));
           return roots.filter(Boolean);
         }
       } catch (err) {
         console.warn(`[FeedScraper] Strategy ${name} failed:`, err.message);
       }
+    }
+
+    // Strategy 3: Heuristic — direct children of feed that look like posts
+    // (large divs with minimum height/content, containing links and buttons)
+    try {
+      const candidates = safeQuerySelectorAll(feed, ':scope > div');
+      const posts = candidates.filter(el => {
+        // Must have some substance: links, text content, and interactive elements
+        const hasLinks = el.querySelectorAll('a[href]').length >= 2;
+        const hasButtons = el.querySelectorAll('button').length >= 1;
+        const hasText = (el.innerText || '').length > 50;
+        return hasLinks && hasButtons && hasText;
+      });
+      if (posts.length > 0) {
+        console.log(`[FeedScraper] Found ${posts.length} posts via heuristic (direct children)`);
+        return posts;
+      }
+    } catch (err) {
+      console.warn('[FeedScraper] Heuristic strategy failed:', err.message);
     }
 
     console.warn('[FeedScraper] No posts found with any strategy');
@@ -391,7 +445,27 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    */
   function extractAuthor(postEl) {
     try {
-      // Strategy 1: aria-label containing "Profile"
+      // Strategy 1: Actor name container (LinkedIn's actor component)
+      const actorSelectors = [
+        '.update-components-actor__name span[aria-hidden="true"]',
+        '.update-components-actor__name span',
+        '.update-components-actor__name',
+        '.feed-shared-actor__name span[aria-hidden="true"]',
+        '.feed-shared-actor__name span',
+        '.feed-shared-actor__name',
+        '[data-testid="actor-name"]',
+      ];
+      for (const sel of actorSelectors) {
+        const el = safeQuerySelector(postEl, sel);
+        if (el) {
+          const text = safeGetText(el);
+          if (text && text.length > 1 && text.length < CONFIG.MAX_AUTHOR_LENGTH) {
+            return text.split('\n')[0].trim();
+          }
+        }
+      }
+
+      // Strategy 2: aria-label containing "Profile"
       const profileCard = safeQuerySelector(postEl, '[aria-label*="Profile"]');
       if (profileCard) {
         const label = safeGetAttr(profileCard, 'aria-label');
@@ -404,7 +478,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         return (label || '').trim().slice(0, CONFIG.MAX_AUTHOR_LENGTH);
       }
 
-      // Strategy 2: "View X's profile" aria-label
+      // Strategy 3: "View X's profile" aria-label
       const viewProfileLink = safeQuerySelector(postEl, 'a[aria-label*="profile"]');
       if (viewProfileLink) {
         const label = safeGetAttr(viewProfileLink, 'aria-label');
@@ -414,11 +488,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         }
       }
 
-      // Strategy 3: Profile link text
-      const profileLink = safeQuerySelector(postEl, 'a[href*="/in/"], a[href*="/company/"]');
-      if (profileLink) {
+      // Strategy 4: Profile link text (first link to /in/ or /company/)
+      const profileLinks = safeQuerySelectorAll(postEl, 'a[href*="/in/"], a[href*="/company/"]');
+      for (const profileLink of profileLinks) {
         const text = safeGetText(profileLink);
-        if (text && text.length > 1 && text.length < CONFIG.MAX_AUTHOR_LENGTH) {
+        if (text && text.length > 1 && text.length < CONFIG.MAX_AUTHOR_LENGTH && !/^\d/.test(text)) {
           return text.split('\n')[0].trim();
         }
       }
@@ -436,20 +510,37 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    */
   function extractHeadline(postEl) {
     try {
-      const profileCard = safeQuerySelector(postEl, '[aria-label*="Profile"]');
-      if (!profileCard) return '';
-
-      const paragraphs = safeQuerySelectorAll(profileCard, 'p');
-      // 3rd <p> is the actual headline
-      if (paragraphs.length >= 3) {
-        const text = safeGetText(paragraphs[2]);
-        if (text) return text;
+      // Strategy 1: Actor description component
+      const descSelectors = [
+        '.update-components-actor__description span[aria-hidden="true"]',
+        '.update-components-actor__description',
+        '.feed-shared-actor__description span[aria-hidden="true"]',
+        '.feed-shared-actor__description',
+        '[data-testid="actor-description"]',
+      ];
+      for (const sel of descSelectors) {
+        const el = safeQuerySelector(postEl, sel);
+        if (el) {
+          const text = safeGetText(el);
+          if (text && text.length > 2 && !/^[•·]\s*(1st|2nd|3rd|Following)/.test(text)) {
+            return text;
+          }
+        }
       }
-      // Fallback: 2nd <p> if not a degree indicator
-      if (paragraphs.length >= 2) {
-        const text = safeGetText(paragraphs[1]);
-        if (text && !/^[•·]\s*(1st|2nd|3rd|Following)/.test(text)) {
-          return text;
+
+      // Strategy 2: Profile card paragraphs
+      const profileCard = safeQuerySelector(postEl, '[aria-label*="Profile"]');
+      if (profileCard) {
+        const paragraphs = safeQuerySelectorAll(profileCard, 'p');
+        if (paragraphs.length >= 3) {
+          const text = safeGetText(paragraphs[2]);
+          if (text) return text;
+        }
+        if (paragraphs.length >= 2) {
+          const text = safeGetText(paragraphs[1]);
+          if (text && !/^[•·]\s*(1st|2nd|3rd|Following)/.test(text)) {
+            return text;
+          }
         }
       }
     } catch (err) {
@@ -466,12 +557,13 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    */
   async function expandPostContent(postEl) {
     try {
-      // Look for "See more", "показать ещё", "ver más" buttons
-      const buttons = safeQuerySelectorAll(postEl, 'button');
+      // Look for "See more" / "…more" / "показать ещё" / "ver más" buttons
+      const buttons = safeQuerySelectorAll(postEl, 'button, [role="button"]');
       for (const btn of buttons) {
         const text = safeGetText(btn).toLowerCase();
         const aria = safeGetAttr(btn, 'aria-label')?.toLowerCase() || '';
-        if (/(see more|show more|ver más|показать ещё|leer más)/.test(text + ' ' + aria)) {
+        const combined = text + ' ' + aria;
+        if (/(see more|show more|\.{2,}more|\u2026more|ver más|mostrar más|показать ещё|показать больше|leer más|mehr anzeigen|voir plus)/.test(combined)) {
           btn.click();
           await delay(500);
           return true;
@@ -496,21 +588,32 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         await expandPostContent(postEl);
       }
 
-      // Primary: data-testid="expandable-text-box"
-      const textBox = safeQuerySelector(postEl, '[data-testid="expandable-text-box"]');
-      if (textBox) {
-        const text = safeGetText(textBox);
-        if (text.length >= CONFIG.MIN_CONTENT_LENGTH) {
-          return text;
+      // Try specific content selectors in priority order
+      const contentSelectors = [
+        '[data-testid="expandable-text-box"]',
+        '[data-ad-preview="message"]',
+        '.feed-shared-text',
+        '.feed-shared-update-v2__description',
+        '.update-components-text',
+        '.break-words',
+      ];
+
+      for (const sel of contentSelectors) {
+        const el = safeQuerySelector(postEl, sel);
+        if (el) {
+          const text = safeGetText(el);
+          if (text.length >= CONFIG.MIN_CONTENT_LENGTH) {
+            return text;
+          }
         }
       }
 
       // Fallback: longest text block that isn't the whole post
+      const postText = safeGetText(postEl);
       let longestText = '';
-      const candidates = safeQuerySelectorAll(postEl, 'span, p, div');
+      const candidates = safeQuerySelectorAll(postEl, 'span[dir="ltr"], span.break-words, div[dir="ltr"], span, p, div');
       for (const el of candidates) {
         const text = safeGetText(el);
-        const postText = safeGetText(postEl);
         if (text.length > longestText.length &&
             text.length >= CONFIG.MIN_CONTENT_LENGTH &&
             text.length < postText.length * 0.8) {
@@ -533,25 +636,41 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     const result = { reactions: 0, comments: 0, reposts: 0 };
 
     try {
-      // Strategy 1: Look for social count container
-      const socialCounts = safeQuerySelector(postEl, '[class*="social-count"]');
-      if (socialCounts) {
-        const text = safeGetText(socialCounts);
-
-        // Parse reactions
-        const reactionMatch = text.match(/(\d[\d,.]*[km]?)\s*reaction/i);
-        if (reactionMatch) result.reactions = parseCount(reactionMatch[1]);
-
-        // Parse comments
-        const commentMatch = text.match(/(\d[\d,.]*[km]?)\s*comment/i);
-        if (commentMatch) result.comments = parseCount(commentMatch[1]);
-
-        // Parse reposts
-        const repostMatch = text.match(/(\d[\d,.]*[km]?)\s*repost/i);
-        if (repostMatch) result.reposts = parseCount(repostMatch[1]);
+      // Strategy 1: aria-label on social count buttons/spans
+      const socialSelectors = [
+        '[class*="social-details"]',
+        '[class*="social-count"]',
+        '.social-details-social-counts',
+      ];
+      for (const sel of socialSelectors) {
+        const container = safeQuerySelector(postEl, sel);
+        if (container) {
+          // Reactions: button/span with aria-label containing count + "reaction"
+          const reactionEl = safeQuerySelector(container, '[aria-label*="reaction"]');
+          if (reactionEl) {
+            const label = safeGetAttr(reactionEl, 'aria-label') || safeGetText(reactionEl);
+            const m = label.match(/(\d[\d,.]*[km]?)/i);
+            if (m) result.reactions = parseCount(m[1]);
+          }
+          // Comments
+          const commentEl = safeQuerySelector(container, '[aria-label*="comment"]');
+          if (commentEl) {
+            const label = safeGetAttr(commentEl, 'aria-label') || safeGetText(commentEl);
+            const m = label.match(/(\d[\d,.]*[km]?)/i);
+            if (m) result.comments = parseCount(m[1]);
+          }
+          // Reposts
+          const repostEl = safeQuerySelector(container, '[aria-label*="repost"]');
+          if (repostEl) {
+            const label = safeGetAttr(repostEl, 'aria-label') || safeGetText(repostEl);
+            const m = label.match(/(\d[\d,.]*[km]?)/i);
+            if (m) result.reposts = parseCount(m[1]);
+          }
+          if (result.reactions > 0 || result.comments > 0 || result.reposts > 0) break;
+        }
       }
 
-      // Strategy 2: Fallback - scan all text
+      // Strategy 2: Fallback - scan all text for patterns
       if (result.reactions === 0 && result.comments === 0 && result.reposts === 0) {
         const text = safeGetText(postEl);
 
@@ -675,11 +794,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     const result = { images: [], videos: [], hasMedia: false };
 
     try {
-      // Images
-      const images = safeQuerySelectorAll(postEl, 'img[data-delayed-url]');
+      // Images (check multiple attribute patterns)
+      const images = safeQuerySelectorAll(postEl, 'img[data-delayed-url], img[src*="media"], img[src*="dms.licdn"]');
       images.forEach(img => {
         const src = safeGetAttr(img, 'data-delayed-url') || safeGetAttr(img, 'src');
-        if (src && !src.includes('transparent.gif')) {
+        if (src && !src.includes('transparent.gif') && !src.includes('data:image') &&
+            !src.includes('/profile-displayphoto') && !src.includes('/company-logo')) {
           result.images.push(src);
         }
       });
@@ -714,11 +834,16 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       const author = extractAuthor(postEl);
       const content = await extractContent(postEl, expandContent);
 
-      // Skip if no meaningful content
-      if (!content && !author) return null;
+      // Skip only if completely empty — author OR content is enough
+      if (!content && !author) {
+        // Last resort: check if the element has any substantial text at all
+        const fullText = safeGetText(postEl);
+        if (fullText.length < 50) return null;
+      }
 
       const componentkey = safeGetAttr(postEl, 'componentkey');
-      const id = generatePostId(author, content, componentkey);
+      const dataUrn = safeGetAttr(postEl, 'data-urn');
+      const id = generatePostId(author, content, componentkey, dataUrn);
 
       // Check cache
       const cached = getCachedPost(id);
@@ -815,7 +940,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     try {
       const initialPosts = await scrapeVisiblePosts(expandContent);
       initialPosts.forEach(p => allPosts.set(p.id, p));
-      previousCount = initialPosts.length;
+      previousCount = allPosts.size;
     } catch (err) {
       console.error('[FeedScraper] Initial scrape failed:', err.message);
     }
@@ -840,18 +965,19 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         const newPosts = await scrapeVisiblePosts(expandContent);
         newPosts.forEach(p => allPosts.set(p.id, p));
 
-        // Check if we got new posts
-        if (newPosts.length <= previousCount) {
+        // Check if we got new unique posts (compare total accumulated)
+        const currentTotal = allPosts.size;
+        if (currentTotal <= previousCount) {
           noNewPostsCount++;
-          if (noNewPostsCount >= 2) {
-            console.log('[FeedScraper] No new posts for 2 scrolls, stopping');
+          if (noNewPostsCount >= 3) {
+            console.log('[FeedScraper] No new posts for 3 scrolls, stopping');
             break;
           }
         } else {
           noNewPostsCount = 0;
         }
 
-        previousCount = newPosts.length;
+        previousCount = currentTotal;
       } catch (err) {
         console.warn('[FeedScraper] Scroll iteration failed:', err.message);
       }

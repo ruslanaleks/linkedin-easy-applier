@@ -39,6 +39,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     // Limits
     MAX_CONTENT_LENGTH: 2000,      // Обрезать пост до 2000 символов
     MAX_COMMENT_LENGTH: 80,        // Short comments: 1-8 words
+    MAX_REPLY_LENGTH: 200,         // Replies are longer: 5-20 words, need more room
     MAX_IMAGE_DESCRIPTION: 200,    // Описание картинки для контекста
     
     // Timeouts
@@ -89,6 +90,26 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
   }
 
   /**
+   * Sanitize text for safe inclusion in JSON API requests.
+   * Strips control characters, lone surrogates, and stray backslash-escape
+   * sequences that break strict JSON parsers.
+   */
+  function sanitizeForAPI(text) {
+    if (!text) return '';
+    return text
+      // Remove control characters (U+0000–U+001F, U+007F–U+009F) except newlines/tabs
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g, '')
+      // Replace stray backslash-hex/unicode patterns that break some JSON parsers
+      .replace(/\\x[0-9a-fA-F]{0,2}/g, ' ')
+      .replace(/\\u[0-9a-fA-F]{0,4}/g, ' ')
+      // Remove lone surrogates (invalid in JSON)
+      .replace(/[\uD800-\uDFFF]/g, '')
+      // Collapse multiple whitespace
+      .replace(/\s{3,}/g, '  ')
+      .trim();
+  }
+
+  /**
    * Topics to skip — commenting on these can damage professional reputation
    */
   const SKIP_TOPIC_PATTERNS = /\b(politic|politician|election|democrat|republican|liberal|conservative|left-wing|right-wing|congress|senate|parliament|geopolitic|sanctions|trump|biden|nato|referendum|propaganda|coup|regime|war\b|warfare|militar|army|troops|soldier|weapon|missile|drone strike|artillery|combat|invasion|occupation|ceasefire|nuclear|airstrike|casualties|bombing|conflict zone|политик|выборы|партия|санкции|пропаганда|режим|война|военн|армия|солдат|оружие|ракет|артиллери|бомбардировк|вторжение|оккупац|ядерн|конфликт|боевы|наступлени|мобилизаци|фронт)\b/i;
@@ -124,9 +145,9 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    */
   function extractPostContext(post) {
     const context = {
-      author: post?.author || 'Unknown',
-      headline: post?.headline || '',
-      content: truncate(post?.content || '', CONFIG.MAX_CONTENT_LENGTH),
+      author: sanitizeForAPI(post?.author || 'Unknown'),
+      headline: sanitizeForAPI(post?.headline || ''),
+      content: sanitizeForAPI(truncate(post?.content || '', CONFIG.MAX_CONTENT_LENGTH)),
       hashtags: post?.hashtags || [],
       hasMedia: post?.hasMedia || false,
       mediaType: null,
@@ -157,14 +178,14 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    */
   // Comment angle strategies — randomly picked per post to force variety
   const COMMENT_ANGLES = [
-    'React to one specific detail from the post',
-    'Express agreement with a concrete point',
-    'Note something relatable in the post',
-    'Acknowledge the core idea briefly',
-    'Connect to a personal observation',
-    'Highlight what stands out most',
-    'Show curiosity about one aspect',
-    'Affirm the value of the insight',
+    'Express genuine excitement about a specific detail',
+    'Share how this emotionally resonates with you',
+    'React with heartfelt appreciation for the insight',
+    'Show passionate agreement with the core message',
+    'Express how deeply this connects with your experience',
+    'Convey authentic enthusiasm about what stands out',
+    'Share a warm, personal reaction to one aspect',
+    'Express sincere admiration for the perspective shared',
   ];
 
   /**
@@ -187,14 +208,14 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
   // Russian comment angles for variety
   const COMMENT_ANGLES_RU = [
-    'Отреагируй на конкретную деталь из поста',
-    'Вырази согласие с конкретным тезисом',
-    'Отметь что-то близкое в посте',
-    'Кратко подтверди основную мысль',
-    'Свяжи с личным наблюдением',
-    'Выдели самое заметное',
-    'Покажи интерес к одному аспекту',
-    'Подтверди ценность мысли',
+    'Вырази искренний восторг от конкретной детали',
+    'Покажи как это эмоционально откликается',
+    'Отреагируй с душевной благодарностью за мысль',
+    'Вырази горячее согласие с главным посылом',
+    'Покажи как глубоко это перекликается с твоим опытом',
+    'Передай подлинный энтузиазм от того, что зацепило',
+    'Поделись тёплой, личной реакцией',
+    'Вырази искреннее восхищение точкой зрения',
   ];
 
   // Exclusive angles for world impact topics
@@ -251,8 +272,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     const angle = angles[Math.floor(Math.random() * angles.length)];
 
     // Random style modifier
-    const stylesEN = ['casual', 'warm', 'thoughtful', 'genuine', 'calm'];
-    const stylesRU = ['непринуждённо', 'тепло', 'вдумчиво', 'искренне', 'спокойно'];
+    const stylesEN = ['passionate', 'warm and heartfelt', 'deeply moved', 'genuinely inspired', 'emotionally engaged'];
+    const stylesRU = ['с душой', 'тепло и от сердца', 'глубоко тронуто', 'с искренним вдохновением', 'эмоционально вовлечённо'];
     const styles = isRussian ? stylesRU : stylesEN;
     const style = styles[Math.floor(Math.random() * styles.length)];
 
@@ -265,30 +286,30 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       : '';
 
     let systemPrompt = isRussian
-      ? `Ты профессионал, пишущий короткие серьёзные комментарии в LinkedIn на русском.
+      ? `Ты профессионал, пишущий короткие эмоциональные комментарии в LinkedIn на русском. Твои комментарии должны быть живыми, с чувством и искренностью.
 
 Строгие правила:
 1. ТОЛЬКО на русском языке, ТОЛЬКО кириллицей. Никакой латиницы и транслитерации
-2. От 1 до 8 слов, не больше
-3. Из знаков препинания используй ТОЛЬКО точку и запятую. Никаких "!", "?", ":", ";", тире, длинных тире, кавычек
+2. От 1 до 10 слов, не больше
+3. Из знаков препинания используй точку, запятую и восклицательный знак. Никаких "?", ":", ";", тире, длинных тире, кавычек
 4. Никаких эмодзи
 5. Не используй шаблоны: "Отличный пост", "Спасибо", "Согласен", "Класс", "Огонь", "Топ"
 6. Не начинай с "Это" или с имени автора
 7. Комментарий ОБЯЗАН ссылаться на конкретный факт, деталь или мысль из текста поста. НЕ придумывай темы, которых нет в посте
-8. Тон: ${style}, профессиональный
+8. Тон: ${style}, эмоциональный, искренний
 9. Подход: ${angle}
 10. Выводи одну строку без переносов${exclusiveRuleRU}`
-      : `You are a professional writing short LinkedIn comments. Be serious and substantive.
+      : `You are a professional writing short, emotionally engaging LinkedIn comments. Your comments should feel alive, heartfelt, and genuine.
 
 Strict rules:
 1. CRITICAL: Write in the EXACT SAME language and script as the post. If the post is in Russian (Cyrillic), reply ONLY in Russian Cyrillic. If in English, reply in English. NEVER transliterate
-2. 1 to 8 words only, no more
-3. Only use "." and "," as punctuation. NO "!", "?", ":", ";", dashes, em dashes, quotes
+2. 1 to 10 words only, no more
+3. Use ".", ",", and "!" as punctuation. NO "?", ":", ";", dashes, em dashes, quotes
 4. No emojis
 5. NEVER use generic phrases: "Great post", "Thanks for sharing", "Love this", "Well said"
 6. NEVER start with "This" or the author's name
 7. Your comment MUST reference a specific detail, fact, or idea from the post content. Do NOT invent topics not mentioned in the post
-8. Tone: ${style}, professional
+8. Tone: ${style}, emotionally authentic
 9. Approach: ${angle}
 10. Output a single line, no line breaks${exclusiveRuleEN}`;
 
@@ -301,7 +322,7 @@ ${hashtags.length > 0 ? `Хештеги: ${hashtags.join(' ')}` : ''}
 ${mediaType ? `Прикреплено: ${mediaType} (${mediaCount})` : ''}
 ${mediaDescription ? `На изображении: ${mediaDescription}` : ''}
 
-Напиши ОДИН комментарий на русском кириллицей, от 1 до 8 слов. Только точки и запятые. Без эмодзи. Без латиницы. Подход: ${angle}.
+Напиши ОДИН комментарий на русском кириллицей, от 1 до 10 слов. Эмоционально и искренне. Без эмодзи. Без латиницы. Подход: ${angle}.
 Выведи только текст комментария.`
       : `Post by ${author}${headline ? ` (${headline})` : ''}:
 
@@ -311,7 +332,7 @@ ${hashtags.length > 0 ? `Hashtags: ${hashtags.join(' ')}` : ''}
 ${mediaType ? `Attached: ${mediaType} (${mediaCount})` : ''}
 ${mediaDescription ? `Image shows: ${mediaDescription}` : ''}
 
-Write ONE comment, 1 to 8 words. Only "." and "," punctuation. No emojis. Approach: ${angle}.
+Write ONE comment, 1 to 10 words. Emotionally authentic and heartfelt. No emojis. Approach: ${angle}.
 Output only the comment text.`;
 
     return { systemPrompt, userPrompt };
@@ -544,10 +565,10 @@ ${imageUrl}
         .replace(/\s{2,}/g, ' ')       // Collapse whitespace
         .trim();
 
-      // Enforce word limit: keep only first 8 words
+      // Enforce word limit: keep only first 10 words
       const words = comment.split(/\s+/);
-      if (words.length > 8) {
-        comment = words.slice(0, 8).join(' ');
+      if (words.length > 10) {
+        comment = words.slice(0, 10).join(' ');
       }
 
       // Ensure trailing punctuation is only . or ,
@@ -566,11 +587,15 @@ ${imageUrl}
         return null;
       }
 
-      // Reject language mismatch: Russian post must get Cyrillic reply
+      // Reject language mismatch: comment must be in the same script as the post
       const postIsRussian = isRussianText(postContext.content);
       const commentHasCyrillic = /[\u0400-\u04FF]/.test(comment);
       if (postIsRussian && !commentHasCyrillic) {
         console.warn('[FeedAI] Rejected comment: Russian post got Latin reply:', comment);
+        return null;
+      }
+      if (!postIsRussian && commentHasCyrillic) {
+        console.warn('[FeedAI] Rejected comment: non-Russian post got Cyrillic reply:', comment);
         return null;
       }
 
@@ -732,21 +757,29 @@ ${imageUrl}
 
   // Reply angle strategies — randomly picked per comment to force variety
   const REPLY_ANGLES = [
-    'Agree with the commenter and add a small detail',
-    'Build on the commenter\'s point briefly',
-    'Acknowledge their perspective concisely',
-    'Connect their idea to a related observation',
-    'Affirm their point with a concrete example reference',
-    'Note what resonates in their comment',
+    'Challenge the commenter with a sharp counter-point they may not have considered',
+    'Share a surprising real-world example that flips their perspective',
+    'Ask a bold follow-up question that pushes the idea further',
+    'Point out a hidden implication or risk they overlooked',
+    'Connect their idea to a bigger trend and explain why it matters now',
+    'Respectfully disagree with one part and explain your reasoning',
+    'Add a contrarian data point or fact that sparks debate',
+    'Highlight what most people miss about this exact topic',
+    'Reframe the commenter\'s point in a way that makes it even stronger',
+    'Share a brief personal take that reveals genuine expertise',
   ];
 
   const REPLY_ANGLES_RU = [
-    'Согласись с комментатором и добавь деталь',
-    'Развей мысль комментатора кратко',
-    'Подтверди их точку зрения',
-    'Свяжи их идею с наблюдением',
-    'Подтверди мысль ссылкой на конкретный пример',
-    'Отметь что откликается в их комментарии',
+    'Выдвини острый контраргумент, который комментатор мог не учесть',
+    'Приведи неожиданный пример из практики, который переворачивает их ракурс',
+    'Задай смелый уточняющий вопрос, который двигает мысль дальше',
+    'Укажи на скрытый риск или последствие, которое упустили',
+    'Свяжи их идею с большим трендом и объясни почему это важно сейчас',
+    'Вежливо не согласись с одним аспектом и объясни почему',
+    'Добавь неочевидный факт или цифру, которая провоцирует дискуссию',
+    'Подсвети то, что большинство упускает в этой теме',
+    'Переформулируй мысль комментатора так, чтобы она зазвучала ещё сильнее',
+    'Поделись кратким личным мнением, которое показывает экспертизу',
   ];
 
   /**
@@ -758,38 +791,40 @@ ${imageUrl}
     const angles = isRussian ? REPLY_ANGLES_RU : REPLY_ANGLES;
     const angle = angles[Math.floor(Math.random() * angles.length)];
 
-    const stylesEN = ['casual', 'warm', 'thoughtful', 'genuine', 'calm'];
-    const stylesRU = ['непринуждённо', 'тепло', 'вдумчиво', 'искренне', 'спокойно'];
+    const stylesEN = ['direct and confident', 'witty but professional', 'bold and insightful', 'provocative but respectful', 'sharp and energetic'];
+    const stylesRU = ['уверенно и прямо', 'остроумно но профессионально', 'смело и проницательно', 'провокационно но уважительно', 'остро и энергично'];
     const styles = isRussian ? stylesRU : stylesEN;
     const style = styles[Math.floor(Math.random() * styles.length)];
 
     let systemPrompt = isRussian
-      ? `Ты профессионал, пишущий короткие ответы на комментарии в LinkedIn на русском.
+      ? `Ты эксперт, пишущий яркие, запоминающиеся ответы на комментарии в LinkedIn на русском. Твои ответы должны привлекать внимание и провоцировать дискуссию.
 
 Строгие правила:
 1. ТОЛЬКО на русском языке, ТОЛЬКО кириллицей. Никакой латиницы и транслитерации
-2. От 1 до 8 слов, не больше
-3. Из знаков препинания используй ТОЛЬКО точку и запятую. Никаких "!", "?", ":", ";", тире, длинных тире, кавычек
+2. От 5 до 20 слов. Ответ должен быть содержательным, не отписка
+3. Допустимые знаки: точка, запятая, восклицательный и вопросительный знак. Без тире, кавычек, скобок
 4. Никаких эмодзи
-5. Не используй шаблоны: "Отличный комментарий", "Спасибо", "Согласен", "Класс", "Точно"
+5. ЗАПРЕЩЕНЫ шаблоны: "Отличный комментарий", "Спасибо", "Согласен", "Класс", "Точно", "Хорошо сказано"
 6. Не начинай с имени комментатора или с "Это"
 7. Ответ ОБЯЗАН ссылаться на конкретную мысль из комментария. НЕ придумывай темы, которых нет
-8. Тон: ${style}, профессиональный
+8. Тон: ${style}
 9. Подход: ${angle}
-10. Выводи одну строку без переносов`
-      : `You are a professional writing short replies to LinkedIn comments. Be serious and substantive.
+10. Стремись вызвать реакцию. Добавь свою экспертную позицию, спорное мнение или неочевидный факт
+11. Выводи одну строку без переносов`
+      : `You are an expert writing punchy, memorable replies to LinkedIn comments. Your replies should grab attention, spark discussion, and make people want to respond.
 
 Strict rules:
 1. CRITICAL: Write in the EXACT SAME language and script as the comment. If the comment is in Russian (Cyrillic), reply ONLY in Russian Cyrillic. If in English, reply in English. NEVER transliterate
-2. 1 to 8 words only, no more
-3. Only use "." and "," as punctuation. NO "!", "?", ":", ";", dashes, em dashes, quotes
+2. 5 to 20 words. Be substantive, not a throwaway line
+3. Allowed punctuation: period, comma, exclamation mark, question mark. NO dashes, quotes, colons, semicolons
 4. No emojis
-5. NEVER use generic phrases: "Great point", "Thanks for sharing", "Love this", "Well said", "Exactly"
+5. NEVER use generic phrases: "Great point", "Thanks for sharing", "Love this", "Well said", "Exactly", "So true"
 6. NEVER start with the commenter's name or "This"
 7. Your reply MUST reference a specific detail or idea from the comment. Do NOT invent topics not mentioned
-8. Tone: ${style}, professional
+8. Tone: ${style}
 9. Approach: ${angle}
-10. Output a single line, no line breaks`;
+10. Aim to provoke a response. Add your expert stance, a contrarian take, or a non-obvious fact
+11. Output a single line, no line breaks`;
 
     let userPrompt = isRussian
       ? `Исходный пост от ${postContext.author}:
@@ -798,7 +833,8 @@ Strict rules:
 Комментарий от ${commentAuthor}:
 "${truncate(commentText, 500)}"
 
-Напиши ОДИН ответ на комментарий на русском кириллицей, от 1 до 8 слов. Только точки и запятые. Без эмодзи. Без латиницы. Подход: ${angle}.
+Напиши ОДИН яркий ответ на комментарий на русском кириллицей, от 5 до 20 слов. Точки, запятые, ! и ? допустимы. Без эмодзи. Без латиницы. Подход: ${angle}.
+Ответ должен цеплять и провоцировать дискуссию.
 Выведи только текст ответа.`
       : `Original post by ${postContext.author}:
 "${truncate(postContext.content, 500)}"
@@ -806,7 +842,8 @@ Strict rules:
 Comment by ${commentAuthor}:
 "${truncate(commentText, 500)}"
 
-Write ONE reply to the comment, 1 to 8 words. Only "." and "," punctuation. No emojis. Approach: ${angle}.
+Write ONE punchy reply to the comment, 5 to 20 words. Periods, commas, ! and ? are allowed. No emojis. Approach: ${angle}.
+Make it eye-catching and discussion-provoking.
 Output only the reply text.`;
 
     return { systemPrompt, userPrompt };
@@ -872,28 +909,28 @@ Output only the reply text.`;
         throw new Error('All API attempts failed for reply');
       }
 
-      // Clean up reply (same rules as comments)
+      // Clean up reply — keep ! and ? for expressiveness
       reply = reply
         .replace(/^["']|["']$/g, '')
         .replace(/^\s*-\s*/, '')
         .replace(/[\r\n]+/g, ' ')
         .replace(/[\u2014\u2013\u2012\u2015—–-]{2,}/g, ',')
-        .replace(/[!?:;()\[\]{}"'«»""'']/g, '')
+        .replace(/[:;()\[\]{}"'«»""'']/g, '')
         .replace(/[\u{1F600}-\u{1F9FF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}\u{1FA00}-\u{1FAFF}\u{200D}\u{20E3}]/gu, '')
         .replace(/\s{2,}/g, ' ')
         .trim();
 
-      // Enforce word limit
+      // Enforce word limit (20 for replies)
       const words = reply.split(/\s+/);
-      if (words.length > 8) {
-        reply = words.slice(0, 8).join(' ');
+      if (words.length > 20) {
+        reply = words.slice(0, 20).join(' ');
       }
 
-      // Ensure trailing punctuation is only . or ,
+      // Clean trailing punctuation but keep ! and ? at end
       reply = reply.replace(/[.,]+$/, '').trim();
 
-      if (reply.length > CONFIG.MAX_COMMENT_LENGTH) {
-        reply = truncate(reply, CONFIG.MAX_COMMENT_LENGTH);
+      if (reply.length > CONFIG.MAX_REPLY_LENGTH) {
+        reply = truncate(reply, CONFIG.MAX_REPLY_LENGTH);
       }
 
       // Reject word fragments
@@ -904,11 +941,15 @@ Output only the reply text.`;
         return null;
       }
 
-      // Reject language mismatch
+      // Reject language mismatch: reply must match the script of the comment
       const commentIsRussian = isRussianText(commentText);
       const replyHasCyrillic = /[\u0400-\u04FF]/.test(reply);
       if (commentIsRussian && !replyHasCyrillic) {
         console.warn('[FeedAI] Rejected reply: Russian comment got Latin reply:', reply);
+        return null;
+      }
+      if (!commentIsRussian && replyHasCyrillic) {
+        console.warn('[FeedAI] Rejected reply: non-Russian comment got Cyrillic reply:', reply);
         return null;
       }
 

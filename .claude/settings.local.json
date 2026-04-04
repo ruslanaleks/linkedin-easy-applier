@@ -16,7 +16,16 @@
       "Bash(node --check \"C:/linkedin-applier/linkedin-applier/feed/feedUI.js\")",
       "Bash(node --check \"C:/linkedin-applier/linkedin-applier/feed/feedContent.js\")",
       "Bash(node --check \"C:/linkedin-applier/linkedin-applier/background.js\")",
-      "Bash(node -e \"JSON.parse\\(require\\(''fs''\\).readFileSync\\(''C:/linkedin-applier/linkedin-applier/manifest.json'',''utf8''\\)\\); console.log\\(''All OK''\\)\")"
+      "Bash(node -e \"JSON.parse\\(require\\(''fs''\\).readFileSync\\(''C:/linkedin-applier/linkedin-applier/manifest.json'',''utf8''\\)\\); console.log\\(''All OK''\\)\")",
+      "Bash(git push:*)",
+      "Bash(git remote:*)",
+      "Bash(node -c feed/feedAI.js)",
+      "Bash(node -c feed/feedEngagement.js)",
+      "Bash(node -c feed/feedUI.js)",
+      "Bash(git stash:*)",
+      "Bash(ls /c/Python*/python.exe)",
+      "Read(//c/Users/**)",
+      "Bash(node:*)"
     ]
   }
 }
