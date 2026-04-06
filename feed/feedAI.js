@@ -152,6 +152,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       hasMedia: post?.hasMedia || false,
       mediaType: null,
       mediaDescription: null,
+      article: post?.article ? sanitizeForAPI(post.article.title || '') : '',
       engagement: {
         reactions: post?.reactions || 0,
         comments: post?.comments || 0,
@@ -313,11 +314,14 @@ Strict rules:
 9. Approach: ${angle}
 10. Output a single line, no line breaks${exclusiveRuleEN}`;
 
+    const { article } = postContext;
+
     let userPrompt = isRussian
       ? `Пост от ${author}${headline ? ` (${headline})` : ''}:
 
 "${content}"
 
+${article ? `Статья: ${article}` : ''}
 ${hashtags.length > 0 ? `Хештеги: ${hashtags.join(' ')}` : ''}
 ${mediaType ? `Прикреплено: ${mediaType} (${mediaCount})` : ''}
 ${mediaDescription ? `На изображении: ${mediaDescription}` : ''}
@@ -328,6 +332,7 @@ ${mediaDescription ? `На изображении: ${mediaDescription}` : ''}
 
 "${content}"
 
+${article ? `Shared article: ${article}` : ''}
 ${hashtags.length > 0 ? `Hashtags: ${hashtags.join(' ')}` : ''}
 ${mediaType ? `Attached: ${mediaType} (${mediaCount})` : ''}
 ${mediaDescription ? `Image shows: ${mediaDescription}` : ''}
@@ -415,19 +420,39 @@ ${imageUrl}
       messagesCount: messages.length,
     });
 
-    const response = await fetch(apiEndpoint, {
-      method: 'POST',
-      headers: getAPIHeaders(provider, apiKey),
-      body: JSON.stringify(requestBody),
-      signal: AbortSignal.timeout(CONFIG.API_TIMEOUT),
-    });
+    let response;
+    try {
+      response = await fetch(apiEndpoint, {
+        method: 'POST',
+        headers: getAPIHeaders(provider, apiKey),
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(CONFIG.API_TIMEOUT),
+      });
+    } catch (fetchErr) {
+      throw new Error(`API fetch failed: ${fetchErr.message}`);
+    }
 
     if (!response.ok) {
-      const errorText = await response.text();
+      let errorText;
+      try {
+        errorText = await response.text();
+      } catch {
+        errorText = response.statusText;
+      }
       throw new Error(`API Error ${response.status}: ${errorText}`);
     }
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch (jsonErr) {
+      throw new Error(`API returned invalid JSON: ${jsonErr.message}`);
+    }
+
+    // Check for API-level error in response body (some providers return 200 with error)
+    if (data.error) {
+      throw new Error(`API returned error: ${data.error.message || JSON.stringify(data.error)}`);
+    }
 
     // Extract response based on provider format
     let content = data.choices?.[0]?.message?.content;
@@ -447,14 +472,23 @@ ${imageUrl}
    */
   async function analyzeImage(imageUrl, settings) {
     try {
+      // Skip URLs that the LLM API can't download (LinkedIn CDN temporary/signed URLs,
+      // data: URIs, blob: URIs, and relative paths)
+      if (!imageUrl || !imageUrl.startsWith('http') ||
+          /\bexpires=\d+\b/i.test(imageUrl) ||
+          /media\.licdn\.com\/dms\//i.test(imageUrl)) {
+        console.log('[FeedAI] Skipping image analysis: URL likely un-downloadable by API');
+        return null;
+      }
+
       console.log('[FeedAI] Analyzing image:', imageUrl);
 
       const { systemPrompt, userPrompt } = buildImageAnalysisPrompt(imageUrl);
-      
+
       const messages = [
         { role: 'system', content: systemPrompt },
-        { 
-          role: 'user', 
+        {
+          role: 'user',
           content: [
             { type: 'text', text: userPrompt },
             { type: 'image_url', image_url: { url: imageUrl } }
@@ -464,7 +498,7 @@ ${imageUrl}
 
       const description = await callLLMAPI(messages, settings);
       console.log('[FeedAI] Image analysis complete:', description.slice(0, 100) + '...');
-      
+
       return description;
     } catch (err) {
       console.warn('[FeedAI] Image analysis failed:', err.message);
@@ -500,9 +534,12 @@ ${imageUrl}
         hashtagsCount: postContext.hashtags.length,
       });
 
-      // Refuse to generate when there is no real content — prevents hallucinated
-      // comments about "blank pages" / "emptiness"
-      if (postContext.content.length < 20 && !postContext.hasMedia && postContext.hashtags.length === 0) {
+      // Refuse to generate when there is truly nothing — prevents hallucinated
+      // comments about "blank pages". Allow short text if post has media, hashtags,
+      // article, or author headline context.
+      const hasContext = postContext.hasMedia || postContext.hashtags.length > 0 ||
+                         postContext.headline || postContext.article;
+      if (postContext.content.length < 10 && !hasContext) {
         console.warn('[FeedAI] Post has no meaningful content, skipping AI generation');
         return null;
       }
@@ -513,12 +550,18 @@ ${imageUrl}
         return null;
       }
 
-      // Analyze image if present and enabled
+      // Analyze image if present and enabled (wrapped in try/catch because
+      // LinkedIn image URLs are often temporary/CORS-blocked and the API may
+      // reject them with "Unable to download all specified images")
       if (postContext.hasMedia && postContext.mediaType === 'image' &&
           post.media?.images?.[0] && options.analyzeImage !== false) {
-        const imageDesc = await analyzeImage(post.media.images[0], settings);
-        if (imageDesc) {
-          postContext.mediaDescription = truncate(imageDesc, CONFIG.MAX_IMAGE_DESCRIPTION);
+        try {
+          const imageDesc = await analyzeImage(post.media.images[0], settings);
+          if (imageDesc) {
+            postContext.mediaDescription = truncate(imageDesc, CONFIG.MAX_IMAGE_DESCRIPTION);
+          }
+        } catch (imgErr) {
+          console.warn('[FeedAI] Image analysis failed, continuing without it:', imgErr.message);
         }
       }
 
@@ -604,7 +647,7 @@ ${imageUrl}
 
     } catch (err) {
       console.error('[FeedAI] generateAIComment error:', err.message);
-      throw err;
+      return null;
     }
   }
 
@@ -958,7 +1001,7 @@ Output only the reply text.`;
 
     } catch (err) {
       console.error('[FeedAI] generateAIReply error:', err.message);
-      throw err;
+      return null;
     }
   }
 

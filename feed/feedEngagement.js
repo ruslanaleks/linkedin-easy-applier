@@ -129,7 +129,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         const elapsed = Date.now() - start;
         const remaining = Math.max(0, ms - elapsed);
         onTick({ remaining, total: ms });
-      }, 5000) : null;
+      }, 1000) : null;
 
       if (signal) {
         signal.addEventListener('abort', () => {
@@ -494,31 +494,46 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    */
   function findLikeButton(postEl) {
     try {
+      // Clickable elements — LinkedIn sometimes uses span/div instead of button
+      const clickableSelector = 'button, [role="button"]';
+
       // Strategy 1: "no reaction" state (newer LinkedIn)
-      const noReactionBtn = safeQuerySelectorAll(postEl, 'button[aria-label*="no reaction"], button[aria-label*="No reaction"]')[0];
+      const noReactionBtn = safeQuerySelectorAll(postEl, 'button[aria-label*="no reaction"], button[aria-label*="No reaction"], [role="button"][aria-label*="no reaction"], [role="button"][aria-label*="No reaction"]')[0];
       if (noReactionBtn) return noReactionBtn;
 
       // Strategy 2: Button with "React Like" or "Like" in aria-label
-      const allBtns = safeQuerySelectorAll(postEl, 'button[aria-label]');
+      const allBtns = safeQuerySelectorAll(postEl, `${clickableSelector}`);
       for (const b of allBtns) {
         const label = safeGetAttr(b, 'aria-label')?.toLowerCase() || '';
+        const pressed = safeGetAttr(b, 'aria-pressed');
         // Match "like", "react like", "me gusta", "нравится" — skip already-liked
         if ((label.includes('like') || label.includes('react') || label.includes('me gusta') || label.includes('нравится')) &&
-            !label.includes('liked') && !label.includes('unlike') && !label.includes('already')) {
+            !label.includes('liked') && !label.includes('unlike') && !label.includes('already') &&
+            pressed !== 'true') {
           return b;
         }
       }
 
-      // Strategy 3: Look for the social actions bar and find the first button (usually Like)
-      const actionBar = safeQuerySelector(postEl, '[class*="social-actions"], [class*="feed-shared-social-action"]');
-      if (actionBar) {
-        const firstBtn = safeQuerySelector(actionBar, 'button');
-        if (firstBtn) {
-          const label = safeGetAttr(firstBtn, 'aria-label')?.toLowerCase() || '';
-          const pressed = safeGetAttr(firstBtn, 'aria-pressed');
-          if (pressed !== 'true' && !label.includes('liked') && !label.includes('unlike')) {
-            return firstBtn;
+      // Strategy 3: Look for the social actions bar and find the first clickable (usually Like)
+      const actionBarSelectors = [
+        '[class*="social-actions"]',
+        '[class*="feed-shared-social-action"]',
+        '[class*="social-action"]',
+        '[class*="feed-shared-social"]',
+        '[data-testid*="social-action"]',
+      ];
+      for (const abSel of actionBarSelectors) {
+        const actionBar = safeQuerySelector(postEl, abSel);
+        if (actionBar) {
+          const firstBtn = safeQuerySelector(actionBar, clickableSelector);
+          if (firstBtn) {
+            const label = safeGetAttr(firstBtn, 'aria-label')?.toLowerCase() || '';
+            const pressed = safeGetAttr(firstBtn, 'aria-pressed');
+            if (pressed !== 'true' && !label.includes('liked') && !label.includes('unlike')) {
+              return firstBtn;
+            }
           }
+          break;
         }
       }
     } catch (err) {
@@ -534,19 +549,17 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    */
   function isAlreadyLiked(postEl) {
     try {
-      // Check for explicit "liked" or "pressed" states
-      const likedBtns = safeQuerySelectorAll(postEl, 'button[aria-pressed="true"], button[aria-label*="liked"], button[aria-label*="Unlike"]');
-      if (likedBtns.length > 0) return true;
-
       // Check for "no reaction" button — its presence means NOT liked
-      const noReaction = safeQuerySelectorAll(postEl, 'button[aria-label*="no reaction"], button[aria-label*="No reaction"]');
+      const noReaction = safeQuerySelectorAll(postEl, 'button[aria-label*="no reaction"], button[aria-label*="No reaction"], [role="button"][aria-label*="no reaction"], [role="button"][aria-label*="No reaction"]');
       if (noReaction.length > 0) return false;
 
-      // Check Like button aria-pressed attribute
-      const allBtns = safeQuerySelectorAll(postEl, 'button[aria-label]');
+      // Check for explicit "liked" or "Unlike" labels on like-related buttons only
+      const allBtns = safeQuerySelectorAll(postEl, 'button[aria-label], [role="button"][aria-label]');
       for (const b of allBtns) {
         const label = safeGetAttr(b, 'aria-label')?.toLowerCase() || '';
-        if (label.includes('like') || label.includes('react')) {
+        // Only check buttons that are clearly the Like/reaction button
+        if (label.includes('like') || label.includes('react') || label.includes('me gusta') || label.includes('нравится')) {
+          if (label.includes('unlike') || label.includes('liked')) return true;
           const pressed = safeGetAttr(b, 'aria-pressed');
           if (pressed === 'true') return true;
           if (pressed === 'false') return false;
@@ -619,12 +632,107 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    */
   function findCommentButton(postEl) {
     try {
-      const btns = safeQuerySelectorAll(postEl, 'button');
-      for (const btn of btns) {
+      // Multi-language comment button labels
+      const commentPatterns = ['comment', 'comentar', 'comentario', 'комментир', 'комментарий', 'комментировать'];
+      // Patterns for the "N comments" count link (not the action button)
+      const countPattern = /^\d+\s+(comment|comentario|комментари)/i;
+      // Like-button patterns to identify the first button (so comment = next sibling)
+      const likePatterns = ['like', 'react', 'me gusta', 'нравится'];
+
+      // Clickable elements selector — LinkedIn sometimes uses span/div instead of button
+      const clickableSelector = 'button, [role="button"], span[tabindex="0"], div[tabindex="0"]';
+
+      // Broader action bar selectors — LinkedIn renames these classes periodically
+      const actionBarSelectors = [
+        '[class*="social-actions"]',
+        '[class*="feed-shared-social-action"]',
+        '[class*="social-action"]',
+        '[class*="feed-shared-social"]',
+        '[data-testid*="social-action"]',
+      ];
+
+      let actionBar = null;
+      for (const sel of actionBarSelectors) {
+        actionBar = safeQuerySelector(postEl, sel);
+        if (actionBar) break;
+      }
+
+      // Strategy 1: Search within the social actions bar by label
+      const searchRoots = actionBar ? [actionBar, postEl] : [postEl];
+
+      for (const root of searchRoots) {
+        const btns = safeQuerySelectorAll(root, clickableSelector);
+        for (const btn of btns) {
+          const label = (safeGetAttr(btn, 'aria-label') || '').toLowerCase();
+          const text = safeGetText(btn).toLowerCase();
+          const match = commentPatterns.some(p => label.includes(p) || text.includes(p));
+          if (match && !countPattern.test(text)) {
+            return btn;
+          }
+        }
+        if (root === actionBar) continue;
+      }
+
+      // Strategy 2: Positional — Comment is the 2nd action in the social actions bar
+      // (LinkedIn order: Like, Comment, Repost, Send)
+      if (actionBar) {
+        // Try direct children first, then nested buttons
+        const barItems = safeQuerySelectorAll(actionBar, ':scope > *');
+        const barBtns = barItems.length >= 3 ? barItems : safeQuerySelectorAll(actionBar, clickableSelector);
+
+        // Find the Like button index, Comment is the next one
+        for (let i = 0; i < barBtns.length; i++) {
+          const el = barBtns[i];
+          const btn = el.matches?.('button, [role="button"]') ? el : safeQuerySelector(el, 'button, [role="button"]');
+          const target = btn || el;
+          const label = (safeGetAttr(target, 'aria-label') || '').toLowerCase();
+          const text = safeGetText(target).toLowerCase();
+          const isLike = likePatterns.some(p => label.includes(p) || text.includes(p)) ||
+                         label.includes('no reaction');
+          if (isLike) {
+            // Return the next sibling's clickable element
+            const nextItem = barBtns[i + 1];
+            if (nextItem) {
+              const nextBtn = nextItem.matches?.('button, [role="button"]') ? nextItem : safeQuerySelector(nextItem, 'button, [role="button"]');
+              console.log('[FeedEngagement] Found comment button via position (next after Like)');
+              return nextBtn || nextItem;
+            }
+          }
+        }
+        // Fallback: just take the 2nd item if there are at least 3 (Like, Comment, Repost)
+        if (barItems.length >= 3) {
+          const secondItem = barItems[1];
+          const secondBtn = safeQuerySelector(secondItem, 'button, [role="button"]') || secondItem;
+          console.log('[FeedEngagement] Found comment button via position (2nd of', barItems.length, 'items)');
+          return secondBtn;
+        }
+      }
+
+      // Strategy 3: SVG icon detection — comment button typically has a chat/speech-bubble icon
+      const svgs = safeQuerySelectorAll(postEl, 'svg');
+      for (const svg of svgs) {
+        const use = safeQuerySelector(svg, 'use');
+        const href = safeGetAttr(use, 'href') || safeGetAttr(use, 'xlink:href') || '';
+        if (href.includes('comment') || href.includes('speech') || href.includes('chat')) {
+          // Walk up to find the clickable parent
+          let parent = svg.parentElement;
+          for (let d = 0; d < 5 && parent && parent !== postEl; d++) {
+            if (parent.matches?.('button, [role="button"]') || parent.tagName === 'BUTTON') {
+              console.log('[FeedEngagement] Found comment button via SVG icon');
+              return parent;
+            }
+            parent = parent.parentElement;
+          }
+        }
+      }
+
+      // Strategy 4: Scan all clickable elements in post (broadest search)
+      const allBtns = safeQuerySelectorAll(postEl, clickableSelector);
+      for (const btn of allBtns) {
         const label = (safeGetAttr(btn, 'aria-label') || '').toLowerCase();
         const text = safeGetText(btn).toLowerCase();
-        if ((label.includes('comment') || text.includes('comment')) &&
-            !/^\d+\s+comment/.test(text)) { // Skip "N comments" count
+        const match = commentPatterns.some(p => label.includes(p) || text.includes(p));
+        if (match && !countPattern.test(text)) {
           return btn;
         }
       }
@@ -641,50 +749,46 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    */
   function findCommentInput(postEl) {
     try {
-      console.log('[FeedEngagement] Searching for comment input...');
+      // Selectors for contenteditable elements (LinkedIn may use "true" or "plaintext-only")
+      const editableSelector = '[contenteditable="true"], [contenteditable="plaintext-only"]';
 
-      // Strategy 1: LinkedIn uses div with role="textbox" and contenteditable
-      const textbox = safeQuerySelector(postEl, '[role="textbox"][contenteditable="true"]');
-      if (textbox) {
-        console.log('[FeedEngagement] Found textbox via role="textbox"');
-        return textbox;
-      }
+      // Strategy 1: role="textbox" with contenteditable (any value)
+      const tb = safeQuerySelector(postEl, '[role="textbox"][contenteditable]');
+      if (tb) return tb;
 
-      // Strategy 2: Any contenteditable div within the comment composer
-      const composer = safeQuerySelector(postEl, '[class*="comment-compose"]');
-      if (composer) {
-        const editable = safeQuerySelector(composer, '[contenteditable="true"]');
-        if (editable) {
-          console.log('[FeedEngagement] Found editable via composer');
-          return editable;
+      // Strategy 2: Any contenteditable div within a comment-related container
+      const composerSelectors = [
+        '[class*="comment-compose"]',
+        '[class*="comments-comment-box"]',
+        '[class*="comment-texteditor"]',
+        '[class*="comments-comment-texteditor"]',
+        '[class*="comment-box"]',
+        '[class*="ql-editor"]',
+      ];
+      for (const sel of composerSelectors) {
+        const composer = safeQuerySelector(postEl, sel);
+        if (composer) {
+          const editable = safeQuerySelector(composer, editableSelector) ||
+                           safeQuerySelector(composer, '[role="textbox"]');
+          if (editable) return editable;
         }
       }
 
       // Strategy 3: Any contenteditable div in post element
-      const editable = safeQuerySelector(postEl, 'div[contenteditable="true"]');
-      if (editable) {
-        console.log('[FeedEngagement] Found generic contenteditable div');
-        return editable;
-      }
+      const editable = safeQuerySelector(postEl, `div${editableSelector.split(', ')[0]}, div${editableSelector.split(', ')[1]}`);
+      if (editable) return editable;
 
-      // Strategy 4: Textarea (fallback)
-      const textarea = safeQuerySelector(postEl, 'textarea');
-      if (textarea) {
-        console.log('[FeedEngagement] Found textarea');
-        return textarea;
-      }
+      // Strategy 4: Textarea or input (fallback)
+      const textarea = safeQuerySelector(postEl, 'textarea, input[type="text"][class*="comment"]');
+      if (textarea) return textarea;
 
       // Strategy 5: Look in modal/dialog if comment box opened in overlay
       const modal = document.querySelector('[role="dialog"], .artdeco-modal');
       if (modal) {
-        const modalInput = safeQuerySelector(modal, '[role="textbox"][contenteditable="true"], div[contenteditable="true"], textarea');
-        if (modalInput) {
-          console.log('[FeedEngagement] Found input in modal');
-          return modalInput;
-        }
+        const modalInput = safeQuerySelector(modal, '[role="textbox"][contenteditable], div[contenteditable="true"], div[contenteditable="plaintext-only"], textarea');
+        if (modalInput) return modalInput;
       }
 
-      console.log('[FeedEngagement] No comment input found with any strategy');
       return null;
     } catch (err) {
       console.error('[FeedEngagement] findCommentInput error:', err.message);
@@ -810,9 +914,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         return false;
       }
 
-      // Find comment button
-      const commentBtn = findCommentButton(postEl);
-      console.log('[FeedEngagement] Comment button found:', !!commentBtn);
+      // Find comment button (search postEl first, then parent)
+      let commentBtn = findCommentButton(postEl);
+      if (!commentBtn && postEl.parentElement) {
+        commentBtn = findCommentButton(postEl.parentElement);
+      }
 
       if (!commentBtn) {
         console.warn('[FeedEngagement] Comment button not found');
@@ -820,24 +926,78 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         return false;
       }
 
-      // Click comment button
+      // Click comment button — sometimes needs a second click to toggle open
       console.log('[FeedEngagement] Clicking comment button...');
+      commentBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      await delay(300);
       commentBtn.click();
       commentFieldOpened = true;
-      await delay(randomDelay(1000, 2000));
+      await delay(randomDelay(1500, 2500));
 
       // Find input - try multiple times as it may take time to appear
       let input = null;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        input = findCommentInput(postEl);
-        console.log('[FeedEngagement] Find comment input attempt', attempt + 1, ':', !!input);
+      const INPUT_ATTEMPTS = 8;
+      for (let attempt = 0; attempt < INPUT_ATTEMPTS; attempt++) {
+        // Search inside postEl, then ancestors up to 3 levels (LinkedIn may render
+        // the comment composer outside the post element's subtree)
+        const searchRoots = [postEl];
+        let ancestor = postEl.parentElement;
+        for (let lvl = 0; lvl < 3 && ancestor; lvl++) {
+          searchRoots.push(ancestor);
+          ancestor = ancestor.parentElement;
+        }
+
+        for (const root of searchRoots) {
+          input = findCommentInput(root);
+          if (input) break;
+        }
+
+        // Check document.activeElement — clicking Comment may have focused the input
+        if (!input && document.activeElement) {
+          const active = document.activeElement;
+          const ce = active.getAttribute?.('contenteditable');
+          if (ce === 'true' || ce === 'plaintext-only') {
+            input = active;
+          }
+        }
+
+        // Broad document scan: find the most recently visible contenteditable
+        // that appeared near the comment button's viewport position
+        if (!input) {
+          const allEditable = document.querySelectorAll('[role="textbox"][contenteditable], div[contenteditable="true"], div[contenteditable="plaintext-only"]');
+          if (allEditable.length > 0) {
+            // Prefer one closest to the comment button vertically
+            const btnRect = commentBtn.getBoundingClientRect();
+            let bestDist = Infinity;
+            for (const el of allEditable) {
+              const rect = el.getBoundingClientRect();
+              // Must be visible (non-zero size)
+              if (rect.width === 0 || rect.height === 0) continue;
+              const dist = Math.abs(rect.top - btnRect.bottom);
+              if (dist < bestDist) {
+                bestDist = dist;
+                input = el;
+              }
+            }
+            // Only accept if reasonably close (within 500px)
+            if (bestDist > 500) input = null;
+          }
+        }
 
         if (input) break;
-        await delay(500);
+
+        // After first failed attempt, try clicking comment button again (toggle issue)
+        if (attempt === 2) {
+          console.log('[FeedEngagement] Re-clicking comment button...');
+          commentBtn.click();
+          await delay(randomDelay(1500, 2500));
+        } else {
+          await delay(1000);
+        }
       }
 
       if (!input) {
-        console.error('[FeedEngagement] Comment input not found after 3 attempts');
+        console.error('[FeedEngagement] Comment input not found after', INPUT_ATTEMPTS, 'attempts');
         closeCommentField(postEl);
         sessionStats.errors++;
         return false;
@@ -1836,19 +1996,25 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       }
 
       // Also check if there's a "N comments" link/button to click first
-      const btns = safeQuerySelectorAll(postEl, 'button, span[role="button"]');
-      for (const btn of btns) {
-        const text = safeGetText(btn).toLowerCase().trim();
-        // Matches "3 comments", "1 comment", "12 comentarios", "5 комментариев" etc.
-        if (/^\d+\s+(comment|comentario|комментари)/i.test(text)) {
-          console.log('[FeedEngagement] Clicking comments count button:', text);
-          btn.click();
-          await delay(randomDelay(1500, 2500));
+      // Search both postEl and parent (LinkedIn may render counts outside the post)
+      const searchRoots = [postEl];
+      if (postEl.parentElement) searchRoots.push(postEl.parentElement);
+      for (const root of searchRoots) {
+        const btns = safeQuerySelectorAll(root, 'button, span[role="button"]');
+        for (const btn of btns) {
+          const text = safeGetText(btn).toLowerCase().trim();
+          // Matches "3 comments", "1 comment", "12 comentarios", "5 комментариев" etc.
+          if (/^\d+\s+(comment|comentario|комментари)/i.test(text)) {
+            console.log('[FeedEngagement] Clicking comments count button:', text);
+            btn.click();
+            await delay(randomDelay(1500, 2500));
 
-          for (const sel of commentCheckSelectors) {
-            if (safeQuerySelectorAll(postEl, sel).length > 0) {
-              console.log(`[FeedEngagement] Comments appeared after clicking count via: ${sel}`);
-              return true;
+            for (const sel of commentCheckSelectors) {
+              if (safeQuerySelectorAll(postEl, sel).length > 0 ||
+                  (postEl.parentElement && safeQuerySelectorAll(postEl.parentElement, sel).length > 0)) {
+                console.log(`[FeedEngagement] Comments appeared after clicking count via: ${sel}`);
+                return true;
+              }
             }
           }
         }
@@ -1857,8 +2023,17 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       // Click comment button to expand
       const commentBtn = findCommentButton(postEl);
       if (!commentBtn) {
-        console.warn('[FeedEngagement] expandComments: comment button not found');
-        return false;
+        // Also try searching in parent element
+        const parentBtn = postEl.parentElement ? findCommentButton(postEl.parentElement) : null;
+        if (!parentBtn) {
+          console.warn('[FeedEngagement] expandComments: comment button not found');
+          return false;
+        }
+        // Use parentBtn
+        console.log('[FeedEngagement] Found comment button in parent, clicking...');
+        parentBtn.click();
+        await delay(randomDelay(2000, 3500));
+        return true;
       }
 
       console.log('[FeedEngagement] Clicking comment button to expand comments...');
@@ -1988,18 +2163,29 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
         // Strategy 2: detect newly appeared textbox (wasn't there before Reply click)
         if (!input) {
-          const allEditable = safeQuerySelectorAll(postEl, '[role="textbox"][contenteditable="true"], div[contenteditable="true"]');
-          if (allEditable.length > preCount) {
-            input = allEditable[allEditable.length - 1]; // the new one
-            console.log('[FeedEngagement] Found reply input via new-textbox detection');
+          // Search both postEl and its parent (LinkedIn may render reply box outside post)
+          const searchRoots = [postEl];
+          if (postEl.parentElement) searchRoots.push(postEl.parentElement);
+          for (const root of searchRoots) {
+            const allEditable = safeQuerySelectorAll(root, '[role="textbox"][contenteditable="true"], div[contenteditable="true"]');
+            if (allEditable.length > preCount) {
+              input = allEditable[allEditable.length - 1]; // the new one
+              console.log('[FeedEngagement] Found reply input via new-textbox detection');
+              break;
+            }
           }
         }
 
-        // Strategy 3: last contenteditable in the post (fallback)
+        // Strategy 3: last contenteditable in the post or parent (fallback)
         if (!input) {
-          const allEditable = safeQuerySelectorAll(postEl, '[role="textbox"][contenteditable="true"], div[contenteditable="true"]');
-          if (allEditable.length > 0) {
-            input = allEditable[allEditable.length - 1];
+          const searchRoots = [postEl];
+          if (postEl.parentElement) searchRoots.push(postEl.parentElement);
+          for (const root of searchRoots) {
+            const allEditable = safeQuerySelectorAll(root, '[role="textbox"][contenteditable="true"], div[contenteditable="true"]');
+            if (allEditable.length > 0) {
+              input = allEditable[allEditable.length - 1];
+              break;
+            }
           }
         }
 
@@ -3077,18 +3263,18 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         }
 
         const postEl = postElements[i];
-        const post = await window.linkedInAutoApply.feed.parsePost(postEl, true);
+
+        // Quick parse WITHOUT expanding "see more" — cheap, just for filtering
+        const post = await window.linkedInAutoApply.feed.parsePost(postEl, false);
 
         if (!post) {
           sessionStats.skipped++;
-          console.log('[FeedEngagement] Skipped: parsePost returned null');
           continue;
         }
 
         // Skip own posts
         if (post.author && isSelfName(post.author)) {
           sessionStats.skipped++;
-          console.log('[FeedEngagement] Skipped own post by:', post.author);
           continue;
         }
 
@@ -3115,17 +3301,26 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
         if (!shouldEngage) {
           sessionStats.skipped++;
-          console.log('[FeedEngagement] Skipped post:', {
-            author: post?.author || 'unknown',
-            reason: 'No matching criteria',
-            criteria: { likeAll, likeHiring, likeKeywordMatches, keywordsCount: keywords.length },
-            postPreview: (post?.content || '').slice(0, 100) + '...',
-          });
+          // Emit progress so UI stays responsive even on skipped posts
+          if (onProgress) {
+            onProgress({
+              phase: 'engaging',
+              currentPost: i + 1,
+              totalPosts: postElements.length,
+              stats: { ...sessionStats },
+              rateLimits: getRateLimitStatus(),
+              skipping: post?.author || 'unknown',
+            });
+          }
           continue;
         }
 
+        // Now expand "see more" only for posts we'll actually engage with
+        // (re-parse with expanded content for AI comment generation)
+        const fullPost = await window.linkedInAutoApply.feed.parsePost(postEl, true) || post;
+
         console.log('[FeedEngagement] Engaging with post:', {
-          author: post?.author || 'unknown',
+          author: fullPost?.author || 'unknown',
           reason: engageReason,
         });
 
@@ -3134,6 +3329,9 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           console.log('[FeedEngagement] Reached max likes for session');
           break;
         }
+
+        // Track which actions were performed on this post for the single cooldown
+        const actionsPerformed = [];
 
         // Helper: fire progress with a countdown message during long waits
         const emitWaiting = (action, tick) => {
@@ -3149,210 +3347,105 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           });
         };
 
-        // Like the post
+        // ── Like ──
         if (sessionStats.liked < maxLikes) {
           const prob = Math.random();
           if (prob <= CONFIG.ENGAGEMENT_PROBABILITY.like) {
-            const liked = await likePost(postEl, post);
-            if (liked) {
-              await delayWithProgress(
-                randomDelay(CONFIG.MIN_LIKE_DELAY, CONFIG.MAX_LIKE_DELAY),
-                abortController?.signal,
-                (tick) => emitWaiting('Like', tick),
-              );
-            }
-          } else {
-            console.log('[FeedEngagement] Skipped like (probability check failed)');
+            const liked = await likePost(postEl, fullPost);
+            if (liked) actionsPerformed.push('like');
           }
         }
 
-        // Comment on the post
+        // ── Comment ──
         let commentedOnThisPost = false;
-        console.log('[FeedEngagement] Comment check:', {
-          enableComments,
-          commented: sessionStats.commented,
-          maxComments,
-          willCheck: enableComments && sessionStats.commented < maxComments,
-        });
-
         if (enableComments && sessionStats.commented < maxComments) {
           const prob = Math.random();
-          console.log('[FeedEngagement] Comment probability:', {
-            prob,
-            threshold: CONFIG.ENGAGEMENT_PROBABILITY.comment,
-            willComment: prob <= CONFIG.ENGAGEMENT_PROBABILITY.comment,
-          });
-
           if (prob <= CONFIG.ENGAGEMENT_PROBABILITY.comment) {
-            console.log('[FeedEngagement] Generating comment...');
-            const comment = await generateComment(post);
-            console.log('[FeedEngagement] Generated comment:', comment);
-
+            const comment = await generateComment(fullPost);
             if (comment) {
-              console.log('[FeedEngagement] Attempting to comment on post...');
               let commented = false;
               const MAX_COMMENT_RETRIES = 3;
               for (let retry = 0; retry < MAX_COMMENT_RETRIES; retry++) {
-                commented = await commentOnPost(postEl, comment, post);
+                commented = await commentOnPost(postEl, comment, fullPost);
                 if (commented) {
                   commentedOnThisPost = true;
-                  console.log('[FeedEngagement] ✓ Comment posted successfully!');
-                  await delayWithProgress(
-                    randomDelay(CONFIG.MIN_COMMENT_DELAY, CONFIG.MAX_COMMENT_DELAY),
-                    abortController?.signal,
-                    (tick) => emitWaiting('Comment', tick),
-                  );
+                  actionsPerformed.push('comment');
                   break;
                 }
                 if (retry < MAX_COMMENT_RETRIES - 1) {
-                  console.log(`[FeedEngagement] Comment attempt ${retry + 1} failed, retrying...`);
                   await delay(randomDelay(2000, 4000));
                 }
               }
-              if (!commented) {
-                console.log('[FeedEngagement] ✗ Comment failed after', MAX_COMMENT_RETRIES, 'attempts');
-              }
-            } else {
-              console.log('[FeedEngagement] ✗ No comment generated');
             }
-          } else {
-            console.log('[FeedEngagement] Skipped comment (probability check failed)');
           }
-        } else {
-          console.log('[FeedEngagement] Skipped comment (disabled or max reached):', {
-            enableComments,
-            commented: sessionStats.commented,
-            maxComments,
-          });
         }
 
-        // Reply to a comment on the post (skip if we just commented to avoid self-reply)
-        if (commentedOnThisPost) {
-          console.log('[FeedEngagement] Skipped reply (just commented on this post)');
-        } else if (enableReplies && sessionStats.replied < maxReplies) {
-          const prob = Math.random();
-          console.log('[FeedEngagement] Reply check:', {
-            enableReplies,
-            replied: sessionStats.replied,
-            maxReplies,
-            prob,
-            threshold: CONFIG.ENGAGEMENT_PROBABILITY.reply,
-            willReply: prob <= CONFIG.ENGAGEMENT_PROBABILITY.reply,
-          });
+        // ── Reply / Thread replies — expand comments once for both ──
+        const needReply = !commentedOnThisPost && enableReplies && sessionStats.replied < maxReplies;
+        const needThread = enableReplies && replyToThreads && sessionStats.replied < maxReplies;
+        let commentsExpanded = false;
 
+        if (needReply || needThread) {
+          commentsExpanded = await expandComments(postEl);
+          if (commentsExpanded) {
+            await delay(randomDelay(500, 1000));
+          }
+        }
+
+        // Reply to a comment (skip if we just commented to avoid self-reply)
+        if (needReply && commentsExpanded) {
+          const prob = Math.random();
           if (prob <= CONFIG.ENGAGEMENT_PROBABILITY.reply) {
             try {
-              // Expand comments section
-              console.log('[FeedEngagement] Expanding comments for reply...');
-              const expanded = await expandComments(postEl);
-              console.log('[FeedEngagement] Comments expanded:', expanded);
+              const comments = scrapeComments(postEl);
+              const postLang = detectTextLanguage(fullPost?.content);
+              const othersComments = comments.filter(c => {
+                if (isSelfName(c.author)) return false;
+                return detectTextLanguage(c.text) === postLang;
+              });
 
-              if (expanded) {
-                // Wait a bit for DOM to settle after expansion
-                await delay(randomDelay(500, 1000));
-
-                const comments = scrapeComments(postEl);
-                console.log('[FeedEngagement] Scraped comments for reply:', comments.length);
-
-                // Filter out own comments and comments in a different language
-                const postLang = detectTextLanguage(post?.content);
-                const othersComments = comments.filter(c => {
-                  if (isSelfName(c.author)) return false;
-                  // Only reply to comments in the same language as the post
-                  const commentLang = detectTextLanguage(c.text);
-                  return commentLang === postLang;
-                });
-                console.log('[FeedEngagement] Comments after self+language filter:', othersComments.length, '/', comments.length, '(postLang:', postLang + ')');
-
-                if (othersComments.length > 0) {
-                  // Pick the best comment to reply to (scored by engagement potential)
-                  const target = selectBestComment(othersComments);
-                  if (!target) {
-                    console.log('[FeedEngagement] No comments scored high enough for reply');
-                  } else {
-                    console.log('[FeedEngagement] Generating reply to comment by:', target.author, '| text:', target.text.slice(0, 60));
-
-                    const reply = await generateReply(post, target.author, target.text);
-                    console.log('[FeedEngagement] Generated reply:', reply ? reply.slice(0, 60) + '...' : 'null');
-
-                    if (reply) {
-                      let replied = false;
-                      const MAX_REPLY_RETRIES = 2;
-                      for (let retry = 0; retry < MAX_REPLY_RETRIES; retry++) {
-                        replied = await replyToComment(postEl, target.element, reply);
-                        if (replied) {
-                          console.log('[FeedEngagement] ✓ Reply posted successfully!');
-                          await delayWithProgress(
-                            randomDelay(CONFIG.MIN_REPLY_DELAY, CONFIG.MAX_REPLY_DELAY),
-                            abortController?.signal,
-                            (tick) => emitWaiting('Reply', tick),
-                          );
-                          break;
-                        }
-                        if (retry < MAX_REPLY_RETRIES - 1) {
-                          console.log(`[FeedEngagement] Reply attempt ${retry + 1} failed, retrying...`);
-                          await delay(randomDelay(2000, 4000));
-                        }
+              if (othersComments.length > 0) {
+                const target = selectBestComment(othersComments);
+                if (target) {
+                  const reply = await generateReply(fullPost, target.author, target.text);
+                  if (reply) {
+                    const MAX_REPLY_RETRIES = 2;
+                    for (let retry = 0; retry < MAX_REPLY_RETRIES; retry++) {
+                      const replied = await replyToComment(postEl, target.element, reply);
+                      if (replied) {
+                        actionsPerformed.push('reply');
+                        break;
                       }
-                      if (!replied) {
-                        console.log('[FeedEngagement] ✗ Reply failed after', MAX_REPLY_RETRIES, 'attempts');
+                      if (retry < MAX_REPLY_RETRIES - 1) {
+                        await delay(randomDelay(2000, 4000));
                       }
                     }
                   }
-                } else {
-                  console.log('[FeedEngagement] No comments from others to reply to');
                 }
               }
             } catch (replyErr) {
               console.error('[FeedEngagement] Reply block error:', replyErr.message);
             }
-          } else {
-            console.log('[FeedEngagement] Skipped reply (probability check failed)');
           }
-        } else if (enableReplies) {
-          console.log('[FeedEngagement] Skipped reply (max reached):', {
-            replied: sessionStats.replied,
-            maxReplies,
-          });
         }
 
-        // Reply to conversation threads (people who replied to YOUR comments) — highest priority
-        if (enableReplies && replyToThreads && sessionStats.replied < maxReplies) {
+        // Reply to conversation threads (people who replied to YOUR comments)
+        if (needThread && commentsExpanded && sessionStats.replied < maxReplies) {
           try {
-            // Ensure comments are expanded
-            const expanded = await expandComments(postEl);
-            if (expanded) {
-              await delay(randomDelay(500, 1000));
-              const threadTargets = findRepliesToOwnComments(postEl);
+            const threadTargets = findRepliesToOwnComments(postEl);
+            const postLang = detectTextLanguage(fullPost?.content);
 
-              for (const thread of threadTargets) {
-                if (abortController?.signal?.aborted) break;
-                if (sessionStats.replied >= maxReplies) break;
+            for (const thread of threadTargets) {
+              if (abortController?.signal?.aborted) break;
+              if (sessionStats.replied >= maxReplies) break;
+              if (!checkRateLimit('reply').allowed) break;
+              if (detectTextLanguage(thread.replyText) !== postLang) continue;
 
-                const threadLimit = checkRateLimit('reply');
-                if (!threadLimit.allowed) break;
-
-                // Filter by language
-                const threadLang = detectTextLanguage(thread.replyText);
-                const postLang = detectTextLanguage(post?.content);
-                if (threadLang !== postLang) continue;
-
-                console.log('[FeedEngagement] Thread reply: someone replied to our comment:', {
-                  replyAuthor: thread.replyAuthor,
-                  replyText: thread.replyText.slice(0, 60),
-                });
-
-                const threadReply = await generateReply(post, thread.replyAuthor, thread.replyText);
-                if (threadReply) {
-                  const replied = await replyToComment(postEl, thread.replyElement, threadReply);
-                  if (replied) {
-                    console.log('[FeedEngagement] ✓ Thread reply posted!');
-                    await delayWithProgress(
-                      randomDelay(CONFIG.MIN_REPLY_DELAY, CONFIG.MAX_REPLY_DELAY),
-                      abortController?.signal,
-                      (tick) => emitWaiting('Thread reply', tick),
-                    );
-                  }
+              const threadReply = await generateReply(fullPost, thread.replyAuthor, thread.replyText);
+              if (threadReply) {
+                const replied = await replyToComment(postEl, thread.replyElement, threadReply);
+                if (replied) {
+                  actionsPerformed.push('threadReply');
                 }
               }
             }
@@ -3361,17 +3454,36 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           }
         }
 
-        // Follow the author
+        // ── Follow ──
         if (enableFollows) {
           const prob = Math.random();
           if (prob <= CONFIG.ENGAGEMENT_PROBABILITY.follow) {
-            await followAuthor(postEl, post);
-            await delayWithProgress(
-              randomDelay(CONFIG.MIN_FOLLOW_DELAY, CONFIG.MAX_FOLLOW_DELAY),
-              abortController?.signal,
-              (tick) => emitWaiting('Follow', tick),
-            );
+            const followed = await followAuthor(postEl, fullPost);
+            if (followed) actionsPerformed.push('follow');
           }
+        }
+
+        // ── Single cooldown per post (only if we did something) ──
+        if (actionsPerformed.length > 0) {
+          // Use the longest delay range among performed actions
+          let minDelay = CONFIG.MIN_LIKE_DELAY;
+          let maxDelayVal = CONFIG.MAX_LIKE_DELAY;
+          if (actionsPerformed.includes('comment')) {
+            minDelay = Math.max(minDelay, CONFIG.MIN_COMMENT_DELAY);
+            maxDelayVal = Math.max(maxDelayVal, CONFIG.MAX_COMMENT_DELAY);
+          }
+          if (actionsPerformed.includes('reply') || actionsPerformed.includes('threadReply')) {
+            minDelay = Math.max(minDelay, CONFIG.MIN_REPLY_DELAY);
+            maxDelayVal = Math.max(maxDelayVal, CONFIG.MAX_REPLY_DELAY);
+          }
+
+          const actions = actionsPerformed.join('+');
+          console.log(`[FeedEngagement] Post done (${actions}), single cooldown...`);
+          await delayWithProgress(
+            randomDelay(minDelay, maxDelayVal),
+            abortController?.signal,
+            (tick) => emitWaiting(actions, tick),
+          );
         }
 
         // Progress callback
@@ -3388,11 +3500,15 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
       console.log('[FeedEngagement] Auto-engagement complete:', sessionStats);
 
-      // Notify background script
-      chrome.runtime.sendMessage({
-        action: 'feedEngagementComplete',
-        stats: sessionStats,
-      });
+      // Notify background script (guard against invalidated extension context)
+      try {
+        chrome.runtime?.sendMessage?.({
+          action: 'feedEngagementComplete',
+          stats: sessionStats,
+        });
+      } catch (msgErr) {
+        console.warn('[FeedEngagement] Could not notify background:', msgErr.message);
+      }
 
     } catch (err) {
       if (err.message !== 'Aborted') {

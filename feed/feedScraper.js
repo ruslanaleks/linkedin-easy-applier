@@ -30,11 +30,13 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     // Child-element selector strategies (fallback — find a child then walk up)
     SELECTOR_STRATEGIES: [
       { name: 'main-card', selector: '[data-testid="main-feed-activity-card"]' },
+      { name: 'commentary', selector: '[data-testid="main-feed-activity-card__commentary"]' },
       { name: 'data-testid', selector: '[data-testid="expandable-text-box"]' },
       { name: 'ad-preview', selector: '[data-ad-preview="message"]' },
       { name: 'aria-profile', selector: '[aria-label*="Profile"]' },
       { name: 'componentkey', selector: '[componentkey^="auto-component-"]' },
       { name: 'reaction-count', selector: '[aria-label*="reaction"]' },
+      { name: 'social-actions', selector: '[data-testid*="social-action"]' },
       { name: 'feed-text', selector: '.feed-shared-text' },
       { name: 'break-words', selector: '.break-words' },
       { name: 'update-text', selector: '.update-components-text' },
@@ -589,12 +591,18 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       }
 
       // Try specific content selectors in priority order
+      // LinkedIn periodically renames classes; keep multiple generations of selectors
       const contentSelectors = [
+        '[data-testid="main-feed-activity-card__commentary"]',
         '[data-testid="expandable-text-box"]',
         '[data-ad-preview="message"]',
         '.feed-shared-text',
+        '.feed-shared-inline-show-more-text',
         '.feed-shared-update-v2__description',
         '.update-components-text',
+        '.update-components-text__text-view',
+        '[class*="feed-shared-text"]',
+        '[class*="update-components-text"]',
         '.break-words',
       ];
 
@@ -605,6 +613,19 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           if (text.length >= CONFIG.MIN_CONTENT_LENGTH) {
             return text;
           }
+        }
+      }
+
+      // Strategy 2: Find content by dir="ltr" spans that are inside the post body
+      // (LinkedIn wraps user text in dir="ltr" spans)
+      const dirLtrSpans = safeQuerySelectorAll(postEl, 'span[dir="ltr"]');
+      for (const span of dirLtrSpans) {
+        // Skip spans inside the social actions bar or header
+        const parent = span.closest?.('[class*="social-actions"], [class*="actor"], [class*="header"]');
+        if (parent) continue;
+        const text = safeGetText(span);
+        if (text.length >= CONFIG.MIN_CONTENT_LENGTH) {
+          return text;
         }
       }
 

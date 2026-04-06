@@ -260,11 +260,13 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       // Save to storage
       await chrome.storage.local.set({ lastFeedAnalysis: analysis });
 
-      // Notify background
-      chrome.runtime.sendMessage({
-        action: 'feedAnalysisComplete',
-        summary: analysis.summary,
-      });
+      // Notify background (guard against invalidated extension context)
+      try {
+        chrome.runtime?.sendMessage?.({
+          action: 'feedAnalysisComplete',
+          summary: analysis.summary,
+        });
+      } catch (_) { /* extension context invalidated */ }
 
       showAnalysisResults(analysis);
     } catch (err) {
@@ -335,6 +337,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
               `❤️ ${progress.stats.liked} | 💬 ${progress.stats.commented} | 🔁 ${progress.stats.replied} | ➕ ${progress.stats.followed}`;
             if (progress.waiting) {
               statusLine += `\n⏳ ${progress.waiting}`;
+            } else if (progress.skipping) {
+              statusLine += `\n⏭️ Skipped: ${progress.skipping}`;
             }
             updateProgress(statusLine);
             updateProgressBar(
