@@ -9,6 +9,9 @@
         "storage",
         "notifications"
     ],
+    "host_permissions": [
+        "https://api.anthropic.com/*"
+    ],
     "background": {
         "service_worker": "background.js"
     },
@@ -41,6 +44,7 @@
                 "utils.js",
                 "feed/feedScraper.js",
                 "feed/feedEngagement.js",
+                "feed/feedScoring.js",
                 "feed/feedAI.js",
                 "feed/feedUI.js",
                 "feed/feedContent.js"
@@ -62,6 +66,7 @@
                 "ui.js",
                 "feed/feedScraper.js",
                 "feed/feedEngagement.js",
+                "feed/feedScoring.js",
                 "feed/feedAI.js",
                 "feed/feedUI.js",
                 "feed/feedContent.js"

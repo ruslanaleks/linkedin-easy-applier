@@ -196,6 +196,154 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     }
   }
 
+  // ── Pre-filter: Engaged Posts Tracking (persistent across sessions) ────
+  const ENGAGED_POSTS_KEY = 'feedEngagedPostIds';
+  const ENGAGED_POSTS_MAX = 2000; // cap stored IDs to avoid unbounded growth
+
+  /**
+   * Load the set of already-engaged post IDs from storage
+   * @returns {Promise<Set<string>>}
+   */
+  async function loadEngagedPostIds() {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage) return new Set();
+      const data = await chrome.storage.local.get(ENGAGED_POSTS_KEY);
+      const arr = data?.[ENGAGED_POSTS_KEY];
+      return new Set(Array.isArray(arr) ? arr : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  /**
+   * Persist engaged post IDs to storage (keeps latest ENGAGED_POSTS_MAX entries)
+   * @param {Set<string>} ids
+   */
+  async function saveEngagedPostIds(ids) {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage) return;
+      let arr = Array.from(ids);
+      if (arr.length > ENGAGED_POSTS_MAX) {
+        arr = arr.slice(arr.length - ENGAGED_POSTS_MAX);
+      }
+      await chrome.storage.local.set({ [ENGAGED_POSTS_KEY]: arr });
+    } catch {
+      // ignore storage errors
+    }
+  }
+
+  // ── Pre-filter: Timestamp Helpers ─────────────────────────────────────
+
+  /**
+   * Parse a LinkedIn relative timestamp string into an age in hours.
+   * Handles: "2h", "3d", "1w", "5m", "30s", "1mo", "1y",
+   *          "2 hours ago", "3 days ago", datetime ISO strings.
+   * @param {string} ts
+   * @returns {number|null} age in hours, or null if unparseable
+   */
+  function parseTimestampToHours(ts) {
+    if (!ts) return null;
+    const t = ts.trim().toLowerCase();
+
+    // ISO datetime (from <time datetime="...">)
+    if (t.includes('t') && t.includes('-')) {
+      const d = new Date(ts);
+      if (!isNaN(d.getTime())) {
+        return (Date.now() - d.getTime()) / (1000 * 60 * 60);
+      }
+    }
+
+    // Short form: "2h", "3d", "1w", "5m", "30s", "1mo", "1y"
+    const shortMatch = t.match(/^(\d+)\s*(mo|h|d|w|m|s|y)$/);
+    if (shortMatch) {
+      const val = parseInt(shortMatch[1], 10);
+      const unit = shortMatch[2];
+      if (unit === 's') return val / 3600;
+      if (unit === 'm') return val / 60;
+      if (unit === 'h') return val;
+      if (unit === 'd') return val * 24;
+      if (unit === 'w') return val * 24 * 7;
+      if (unit === 'mo') return val * 24 * 30;
+      if (unit === 'y') return val * 24 * 365;
+    }
+
+    // Long form: "2 hours ago", "3 days ago"
+    const longMatch = t.match(/^(\d+)\s+(second|minute|hour|day|week|month|year)s?\s*ago$/);
+    if (longMatch) {
+      const val = parseInt(longMatch[1], 10);
+      const unit = longMatch[2];
+      if (unit === 'second') return val / 3600;
+      if (unit === 'minute') return val / 60;
+      if (unit === 'hour') return val;
+      if (unit === 'day') return val * 24;
+      if (unit === 'week') return val * 24 * 7;
+      if (unit === 'month') return val * 24 * 30;
+      if (unit === 'year') return val * 24 * 365;
+    }
+
+    return null;
+  }
+
+  // ── Pre-filter: Repost Detection ──────────────────────────────────────
+
+  const REPOST_SIGNALS = [
+    'reposted this', 'reposted', 'shared this', 'compartió esto',
+    'ha compartido', 'republicó', 'репост',
+  ];
+
+  /**
+   * Check if a post DOM element is a repost (someone else's content reshared).
+   * LinkedIn marks reposts with a small header like "Name reposted this".
+   * @param {Element} postEl
+   * @returns {boolean}
+   */
+  function isRepost(postEl) {
+    try {
+      // Strategy 1: header text within the first 200 chars of the post element
+      const headerCandidates = safeQuerySelectorAll(postEl,
+        '[class*="update-components-header"], [class*="feed-shared-header"], ' +
+        '[class*="social-details-social-activity"], [data-testid*="header"]'
+      );
+      for (const el of headerCandidates) {
+        const text = safeGetText(el).toLowerCase();
+        if (REPOST_SIGNALS.some(sig => text.includes(sig))) return true;
+      }
+
+      // Strategy 2: check the first few spans/p in the post for repost text
+      const topTexts = safeQuerySelectorAll(postEl, 'span, p').slice(0, 15);
+      for (const el of topTexts) {
+        const text = safeGetText(el).toLowerCase();
+        if (text.length > 200) continue; // skip large blocks
+        if (REPOST_SIGNALS.some(sig => text.includes(sig))) return true;
+      }
+    } catch {
+      // ignore
+    }
+    return false;
+  }
+
+  // ── Pre-filter: Vacancy Detection ─────────────────────────────────────
+
+  const VACANCY_SIGNALS = [
+    'hiring', "we're hiring", 'we are hiring', 'join our team',
+    'open position', 'open role', 'job opening', 'apply now',
+    'come work with us', 'new opportunity', 'career opportunity',
+    'estamos contratando', 'buscamos', 'vacante', 'oportunidad laboral',
+    'únete a nuestro equipo', 'puesto abierto',
+    '#hiring', '#opentowork', '#jobalert', '#nowhiring',
+    'looking for a', 'looking to hire',
+  ];
+
+  /**
+   * Check if a post is a job vacancy / hiring announcement.
+   * @param {Object} post - parsed post object
+   * @returns {boolean}
+   */
+  function isVacancy(post) {
+    const text = ((post.content || '') + ' ' + (post.author || '')).toLowerCase();
+    return VACANCY_SIGNALS.some(sig => text.includes(sig));
+  }
+
   // ── Current User Detection (prevent self-engagement) ───────────────────
 
   let _cachedCurrentUser = null;
@@ -3177,8 +3325,29 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     maxLikes = 30,
     maxComments = 15,
     maxReplies = 8,
+    enableHashtags = false,
+    hashtagCategories = {},
+    enableDayKeywords = false,
+    dayKeywords = {},
     onProgress = null,
   } = {}) {
+    // Resolve today's day-of-week keywords
+    const todayDayNum = new Date().getDay(); // 0=Sun,1=Mon...6=Sat
+    const todayKeywords = (enableDayKeywords && dayKeywords[todayDayNum]) || [];
+
+    // Flatten all monitored hashtags into a single lowercase set for fast lookup
+    const monitoredHashtags = [];
+    const hashtagCategoryMap = {}; // hashtag -> category name (for logging)
+    if (enableHashtags && hashtagCategories) {
+      for (const [category, tags] of Object.entries(hashtagCategories)) {
+        for (const tag of tags) {
+          const lower = tag.toLowerCase().replace(/^#/, '');
+          monitoredHashtags.push(lower);
+          hashtagCategoryMap[lower] = category;
+        }
+      }
+    }
+
     console.log('[FeedEngagement] autoEngage called with settings:', {
       likeAll,
       likeHiring,
@@ -3190,6 +3359,10 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       maxLikes,
       maxComments,
       maxReplies,
+      enableHashtags,
+      monitoredHashtags: monitoredHashtags.length,
+      enableDayKeywords,
+      todayKeywords,
       commentProbability: CONFIG.ENGAGEMENT_PROBABILITY.comment,
       replyProbability: CONFIG.ENGAGEMENT_PROBABILITY.reply,
     });
@@ -3242,86 +3415,185 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       const postElements = window.linkedInAutoApply.feed.findPostElements();
       const keywords = (window.linkedInAutoApply?.settings?.jobKeywords) || [];
 
-      console.log('[FeedEngagement] Processing', postElements.length, 'posts');
+      // Load previously-engaged post IDs for dedup
+      const engagedPostIds = await loadEngagedPostIds();
 
-      // Transition progress: let the UI know scraping is done and engagement starts
+      // Pre-load scoring settings once (used inside the loop)
+      const _scoring = window.linkedInAutoApply.feedScoring;
+      const _scoringSettings = _scoring ? await _scoring.loadSettings() : null;
+
+      console.log('[FeedEngagement] Processing', postElements.length, 'posts',
+        '| already engaged:', engagedPostIds.size,
+        '| AI scoring:', _scoringSettings?.enableScoring ? 'ON' : 'OFF');
+
+      // ════════════════════════════════════════════════════════════════
+      // PASS 1: Pre-filter all posts → collect candidates
+      // ════════════════════════════════════════════════════════════════
+      const preFiltered = []; // { post, postEl, ageHours }
+
+      for (let i = 0; i < postElements.length; i++) {
+        if (abortController?.signal?.aborted) break;
+
+        const postEl = postElements[i];
+        const post = await window.linkedInAutoApply.feed.parsePost(postEl, false);
+
+        if (!post) { sessionStats.skipped++; continue; }
+        if (post.author && isSelfName(post.author)) { sessionStats.skipped++; continue; }
+        if (post.id && engagedPostIds.has(post.id)) { sessionStats.skipped++; continue; }
+        if ((post.reactions || 0) < 10) { sessionStats.skipped++; continue; }
+
+        const ageHours = parseTimestampToHours(post.timestamp);
+        if (ageHours !== null && ageHours > 48) { sessionStats.skipped++; continue; }
+        if (isRepost(postEl)) { sessionStats.skipped++; continue; }
+        if (isVacancy(post)) { sessionStats.skipped++; continue; }
+
+        preFiltered.push({ post, postEl, ageHours });
+
+        if (onProgress) {
+          onProgress({
+            phase: 'filtering',
+            currentPost: i + 1,
+            totalPosts: postElements.length,
+            passed: preFiltered.length,
+            stats: { ...sessionStats },
+          });
+        }
+      }
+
+      console.log('[FeedEngagement] Pre-filter passed:', preFiltered.length, '/', postElements.length);
+
+      // ════════════════════════════════════════════════════════════════
+      // PASS 2: Score (batch AI or legacy keyword matching)
+      // ════════════════════════════════════════════════════════════════
+      const scoringEnabled = _scoring && _scoringSettings?.enableScoring;
+      let scoredQueue = []; // { post, postEl, ageHours, scoreResult, scoredAction, isTier1, engageReason }
+
+      if (scoringEnabled && preFiltered.length > 0) {
+        // Batch scoring via Claude
+        const BATCH_SIZE = _scoring.getConfig().BATCH_SIZE || 8;
+
+        if (onProgress) {
+          onProgress({
+            phase: 'scoring',
+            total: preFiltered.length,
+            scored: 0,
+            stats: { ...sessionStats },
+          });
+        }
+
+        for (let b = 0; b < preFiltered.length; b += BATCH_SIZE) {
+          if (abortController?.signal?.aborted) break;
+          const chunk = preFiltered.slice(b, b + BATCH_SIZE);
+
+          if (onProgress) {
+            onProgress({
+              phase: 'scoring',
+              total: preFiltered.length,
+              scored: b,
+              batchSize: chunk.length,
+              stats: { ...sessionStats },
+            });
+          }
+
+          const batchResults = await _scoring.scoreBatch(chunk, _scoringSettings);
+
+          for (const item of batchResults) {
+            const engageReason = item.scoredAction === 'skip'
+              ? `AI skip (score: ${item.scoreResult?.score ?? '?'})`
+              : `AI score ${item.scoreResult?.score ?? '?'} → ${item.scoredAction}` +
+                (item.isTier1 ? ' [TIER-1]' : '') +
+                (item.scoreResult?.themes?.length ? ` [${item.scoreResult.themes.join(', ')}]` : '');
+
+            scoredQueue.push({ ...item, engageReason });
+          }
+        }
+
+        // Sort queue: highest score first
+        scoredQueue.sort((a, b) => (b.scoreResult?.score ?? 0) - (a.scoreResult?.score ?? 0));
+
+      } else {
+        // Legacy keyword / hashtag matching
+        for (const item of preFiltered) {
+          const { post } = item;
+          let shouldEngage = likeAll;
+          let engageReason = 'likeAll';
+
+          if (!shouldEngage && likeHiring) {
+            const signals = window.linkedInAutoApply.feed.detectHiringSignals(post);
+            if (signals.length > 0) { shouldEngage = true; engageReason = `hiring (${signals.length} signals)`; }
+          }
+          if (!shouldEngage && likeKeywordMatches && keywords.length > 0) {
+            const text = ((post.content || '') + ' ' + (post.author || '')).toLowerCase();
+            const matched = keywords.filter(kw => text.includes(kw.toLowerCase()));
+            if (matched.length > 0) { shouldEngage = true; engageReason = `keywords (${matched.join(', ')})`; }
+          }
+          if (!shouldEngage && monitoredHashtags.length > 0) {
+            const text = ((post.content || '') + ' ' + (post.author || '')).toLowerCase();
+            const postHashtags = (text.match(/#[\w\u00C0-\u024F]+/g) || []).map(h => h.slice(1));
+            const matched = postHashtags.filter(h => monitoredHashtags.includes(h));
+            if (matched.length > 0) {
+              const categories = [...new Set(matched.map(h => hashtagCategoryMap[h]).filter(Boolean))];
+              shouldEngage = true;
+              engageReason = `hashtags [${categories.join(', ')}] (#${matched.join(', #')})`;
+            }
+          }
+          if (!shouldEngage && todayKeywords.length > 0) {
+            const text = ((post.content || '') + ' ' + (post.author || '')).toLowerCase();
+            const matched = todayKeywords.filter(kw => text.toLowerCase().includes(kw.toLowerCase()));
+            if (matched.length > 0) { shouldEngage = true; engageReason = `day keywords (${matched.join(', ')})`; }
+          }
+
+          scoredQueue.push({
+            ...item,
+            scoreResult: null,
+            scoredAction: shouldEngage ? 'like_only' : 'skip',
+            isTier1: false,
+            engageReason: shouldEngage ? engageReason : 'no match',
+          });
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════════
+      // Emit scored queue so UI can render the post queue panel
+      // ════════════════════════════════════════════════════════════════
+      const actionableQueue = scoredQueue.filter(q => q.scoredAction !== 'skip');
+      const skippedByScore = scoredQueue.filter(q => q.scoredAction === 'skip');
+      sessionStats.skipped += skippedByScore.length;
+
       if (onProgress) {
         onProgress({
-          phase: 'engaging',
-          currentPost: 0,
-          totalPosts: postElements.length,
+          phase: 'queue',
+          queue: scoredQueue,
+          actionable: actionableQueue.length,
+          skipped: skippedByScore.length,
           stats: { ...sessionStats },
-          rateLimits: getRateLimitStatus(),
         });
       }
 
-      // Process each post
-      for (let i = 0; i < postElements.length; i++) {
+      console.log('[FeedEngagement] Scored queue:',
+        scoredQueue.length, 'total |',
+        actionableQueue.length, 'actionable |',
+        skippedByScore.length, 'skipped by score');
+
+      // ════════════════════════════════════════════════════════════════
+      // PASS 3: Engage posts from scored queue
+      // ════════════════════════════════════════════════════════════════
+      for (let i = 0; i < actionableQueue.length; i++) {
         if (abortController?.signal?.aborted) {
           console.log('[FeedEngagement] Engagement aborted');
           break;
         }
 
-        const postEl = postElements[i];
+        const { post, postEl, scoreResult, scoredAction, engageReason } = actionableQueue[i];
 
-        // Quick parse WITHOUT expanding "see more" — cheap, just for filtering
-        const post = await window.linkedInAutoApply.feed.parsePost(postEl, false);
-
-        if (!post) {
-          sessionStats.skipped++;
-          continue;
-        }
-
-        // Skip own posts
-        if (post.author && isSelfName(post.author)) {
-          sessionStats.skipped++;
-          continue;
-        }
-
-        // Determine if we should engage
-        let shouldEngage = likeAll;
-        let engageReason = 'likeAll';
-
-        if (!shouldEngage && likeHiring) {
-          const signals = window.linkedInAutoApply.feed.detectHiringSignals(post);
-          if (signals.length > 0) {
-            shouldEngage = true;
-            engageReason = `hiring (${signals.length} signals)`;
-          }
-        }
-
-        if (!shouldEngage && likeKeywordMatches && keywords.length > 0) {
-          const text = ((post.content || '') + ' ' + (post.author || '')).toLowerCase();
-          const matched = keywords.filter(kw => text.includes(kw.toLowerCase()));
-          if (matched.length > 0) {
-            shouldEngage = true;
-            engageReason = `keywords (${matched.join(', ')})`;
-          }
-        }
-
-        if (!shouldEngage) {
-          sessionStats.skipped++;
-          // Emit progress so UI stays responsive even on skipped posts
-          if (onProgress) {
-            onProgress({
-              phase: 'engaging',
-              currentPost: i + 1,
-              totalPosts: postElements.length,
-              stats: { ...sessionStats },
-              rateLimits: getRateLimitStatus(),
-              skipping: post?.author || 'unknown',
-            });
-          }
-          continue;
-        }
-
-        // Now expand "see more" only for posts we'll actually engage with
-        // (re-parse with expanded content for AI comment generation)
+        // Expand "see more" for posts we'll actually engage with
         const fullPost = await window.linkedInAutoApply.feed.parsePost(postEl, true) || post;
 
         console.log('[FeedEngagement] Engaging with post:', {
           author: fullPost?.author || 'unknown',
           reason: engageReason,
+          score: scoreResult?.score ?? null,
+          action: scoredAction,
         });
 
         // Check session limits
@@ -3340,7 +3612,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           onProgress({
             phase: 'engaging',
             currentPost: i + 1,
-            totalPosts: postElements.length,
+            totalPosts: actionableQueue.length,
             stats: { ...sessionStats },
             rateLimits: getRateLimitStatus(),
             waiting: `${action} cooldown ${secs}s`,
@@ -3349,8 +3621,9 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
         // ── Like ──
         if (sessionStats.liked < maxLikes) {
-          const prob = Math.random();
-          if (prob <= CONFIG.ENGAGEMENT_PROBABILITY.like) {
+          const shouldLike = scoredAction === 'like_only' || scoredAction === 'like_comment'
+            || Math.random() <= CONFIG.ENGAGEMENT_PROBABILITY.like;
+          if (shouldLike) {
             const liked = await likePost(postEl, fullPost);
             if (liked) actionsPerformed.push('like');
           }
@@ -3358,7 +3631,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
         // ── Comment ──
         let commentedOnThisPost = false;
-        if (enableComments && sessionStats.commented < maxComments) {
+        const shouldComment = scoredAction === 'like_comment' && enableComments;
+        if (shouldComment && sessionStats.commented < maxComments) {
           const prob = Math.random();
           if (prob <= CONFIG.ENGAGEMENT_PROBABILITY.comment) {
             const comment = await generateComment(fullPost);
@@ -3465,6 +3739,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
         // ── Single cooldown per post (only if we did something) ──
         if (actionsPerformed.length > 0) {
+          // Mark post as engaged so we never process it again
+          if (post.id) {
+            engagedPostIds.add(post.id);
+            saveEngagedPostIds(engagedPostIds); // fire-and-forget
+          }
+
           // Use the longest delay range among performed actions
           let minDelay = CONFIG.MIN_LIKE_DELAY;
           let maxDelayVal = CONFIG.MAX_LIKE_DELAY;
@@ -3491,7 +3771,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           onProgress({
             phase: 'engaging',
             currentPost: i + 1,
-            totalPosts: postElements.length,
+            totalPosts: actionableQueue.length,
             stats: { ...sessionStats },
             rateLimits: getRateLimitStatus(),
           });

@@ -323,6 +323,10 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         maxLikes: settings.maxLikes,
         maxComments: settings.maxComments,
         maxReplies: settings.maxReplies,
+        enableHashtags: settings.enableHashtags,
+        hashtagCategories: settings.hashtagCategories,
+        enableDayKeywords: settings.enableDayKeywords,
+        dayKeywords: settings.dayKeywords,
         onProgress: (progress) => {
           if (progress.phase === 'scraping') {
             updateProgress(
@@ -330,10 +334,32 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
               `(${progress.postsFound} posts)`
             );
             updateProgressBar((progress.scrollIteration / progress.totalScrolls) * 100);
+          } else if (progress.phase === 'filtering') {
+            updateProgress(
+              `🔍 Pre-filtering: ${progress.currentPost}/${progress.totalPosts} ` +
+              `(${progress.passed} passed)`
+            );
+            updateProgressBar(
+              progress.totalPosts > 0 ? (progress.currentPost / progress.totalPosts) * 50 : 0
+            );
+          } else if (progress.phase === 'scoring') {
+            updateProgress(
+              `🧠 AI Scoring: batch ${progress.scored}/${progress.total} posts...`
+            );
+            updateProgressBar(
+              progress.total > 0 ? 50 + (progress.scored / progress.total) * 25 : 50
+            );
+          } else if (progress.phase === 'queue') {
+            updateProgress(
+              `📋 Queue ready: ${progress.actionable} to engage, ${progress.skipped} skipped`
+            );
+            updateProgressBar(75);
+            // Render queue panel
+            showQueuePanel(progress.queue);
           } else if (progress.phase === 'engaging') {
             const rateStatus = progress.rateLimits;
             let statusLine =
-              `💬 Processing ${progress.currentPost}/${progress.totalPosts}... ` +
+              `💬 Engaging ${progress.currentPost}/${progress.totalPosts}... ` +
               `❤️ ${progress.stats.liked} | 💬 ${progress.stats.commented} | 🔁 ${progress.stats.replied} | ➕ ${progress.stats.followed}`;
             if (progress.waiting) {
               statusLine += `\n⏳ ${progress.waiting}`;
@@ -343,8 +369,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
             updateProgress(statusLine);
             updateProgressBar(
               progress.totalPosts > 0
-                ? (progress.currentPost / progress.totalPosts) * 100
-                : 0
+                ? 75 + (progress.currentPost / progress.totalPosts) * 25
+                : 75
             );
             updateRateLimitStatus(rateStatus);
           }
@@ -382,6 +408,23 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       maxLikes: 30,
       maxComments: 15,
       maxReplies: 8,
+      enableHashtags: true,  // Monitor hashtags by category
+      hashtagCategories: {
+        'FinTech/Payments': ['#fintech', '#payments', '#openbanking', '#embeddedfinance', '#digitalbanking'],
+        'AI': ['#artificialIntelligence', '#aiagents', '#llm', '#generativeAI', '#agenticAI'],
+        'Startups': ['#venturecapital', '#startups', '#seedfunding', '#seriesa', '#fundraising'],
+        'Engineering': ['#microservices', '#systemdesign', '#softwarearchitecture'],
+      },
+      enableDayKeywords: false, // Filter posts by day-of-week keywords
+      dayKeywords: {
+        0: [],  // Sunday
+        1: ['AI agents production', 'raised seed round', 'fintech funding'],          // Monday
+        2: ['payment infrastructure', 'fintech lessons', 'startup pivot'],             // Tuesday
+        3: ['built AI pipeline', 'startup CTO', 'microservices scale'],                // Wednesday
+        4: ['series A fintech', 'AI startup', 'payment processing'],                   // Thursday
+        5: ['AI ROI', 'payment compliance', 'PCI DSS', 'engineering culture'],         // Friday
+        6: [],  // Saturday
+      },
     };
 
     try {
@@ -683,6 +726,9 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
     const settings = await getEngagementSettings();
     const aiSettings = await getAISettings();
+    const scoringSettings = window.linkedInAutoApply.feedScoring
+      ? await window.linkedInAutoApply.feedScoring.loadSettings()
+      : window.linkedInAutoApply.feedScoring?.getDefaultSettings?.() || {};
 
     analysisPanel = document.createElement('div');
     analysisPanel.id = 'feed-settings-panel';
@@ -755,6 +801,66 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
         Follow authors of engaging posts
       </label>
+
+      <h3 style="margin: 22px 0 14px 0; color: #333; font-size: 17px;"># Hashtag Monitoring</h3>
+      <div style="padding: 14px; background: #e8f4fd; border-radius: 6px; margin-bottom: 16px; font-size: 14px; line-height: 1.6;">
+        Engage with posts containing specific hashtags. Organized by category. Comma-separated, include the # symbol.
+      </div>
+
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        <input type="checkbox" id="setting-enable-hashtags" ${settings.enableHashtags ? 'checked' : ''}
+          style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
+        <strong>Enable hashtag monitoring</strong>
+      </label>
+
+      <div id="hashtag-categories-container" style="margin-left: 8px; ${settings.enableHashtags ? '' : 'opacity: 0.5; pointer-events: none;'}">
+        <div id="hashtag-categories-list">
+          ${Object.entries(settings.hashtagCategories || {}).map(([cat, tags], idx) => `
+            <div class="hashtag-cat-row" style="margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 6px; border-left: 3px solid #0073b1;">
+              <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                <input type="text" class="hashtag-cat-name" value="${escapeHtml(cat)}"
+                  placeholder="Category name"
+                  style="flex: 1; padding: 5px 8px; font-size: 14px; font-weight: bold; border: 1px solid #ccc; border-radius: 4px;">
+                <button class="remove-cat-btn" data-idx="${idx}" style="
+                  background: #dc3545; color: #fff; border: none; border-radius: 4px;
+                  padding: 4px 10px; cursor: pointer; font-size: 13px;">✕</button>
+              </div>
+              <input type="text" class="hashtag-cat-tags" value="${escapeHtml(tags.join(', '))}"
+                placeholder="#fintech, #payments, #openbanking"
+                style="width: 95%; padding: 6px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;">
+            </div>
+          `).join('')}
+        </div>
+        <button id="add-hashtag-cat-btn" style="
+          margin-top: 8px; padding: 6px 14px; background: #0073b1; color: #fff;
+          border: none; border-radius: 4px; cursor: pointer; font-size: 13px;">+ Add Category</button>
+      </div>
+
+      <h3 style="margin: 22px 0 14px 0; color: #333; font-size: 17px;">📅 Day-of-Week Keywords</h3>
+      <div style="padding: 14px; background: #e8f4fd; border-radius: 6px; margin-bottom: 16px; font-size: 14px; line-height: 1.6;">
+        Filter posts by topic keywords that change each day. Comma-separated. Leave empty to skip that day.
+      </div>
+
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        <input type="checkbox" id="setting-enable-day-keywords" ${settings.enableDayKeywords ? 'checked' : ''}
+          style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
+        <strong>Enable day-of-week keyword filtering</strong>
+      </label>
+
+      <div id="day-keywords-container" style="margin-left: 8px; ${settings.enableDayKeywords ? '' : 'opacity: 0.5; pointer-events: none;'}">
+        ${['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map((day, idx) => {
+          const dayNum = idx === 6 ? 0 : idx + 1; // Sunday=0, Mon=1..Sat=6
+          const kws = (settings.dayKeywords && settings.dayKeywords[dayNum]) || [];
+          return `
+            <label style="display: block; margin: 8px 0; font-size: 14px; line-height: 1.5;">
+              <strong>${day}:</strong>
+              <input type="text" id="day-kw-${dayNum}" value="${escapeHtml(kws.join(', '))}"
+                placeholder="e.g. AI agents, fintech funding"
+                style="display: block; width: 95%; margin-top: 4px; padding: 6px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;">
+            </label>
+          `;
+        }).join('')}
+      </div>
 
       <h3 style="margin: 22px 0 14px 0; color: #333; font-size: 17px;">Session Limits</h3>
 
@@ -833,6 +939,76 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         <div id="ai-test-result" style="margin-top: 10px; font-size: 14px; line-height: 1.5;"></div>
       </div>
 
+      <h3 style="margin: 22px 0 14px 0; color: #333; font-size: 17px;">🧠 AI Post Scoring (Claude)</h3>
+      <div style="padding: 14px; background: #f0e8fd; border-radius: 6px; margin-bottom: 16px; font-size: 14px; line-height: 1.6;">
+        Every pre-filtered post is scored 0-100 by Claude. Score drives action:
+        <strong>like+comment</strong> / <strong>like only</strong> / <strong>skip</strong>.
+      </div>
+
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        <input type="checkbox" id="scoring-enable" ${scoringSettings.enableScoring ? 'checked' : ''}
+          style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
+        <strong>Enable AI scoring</strong> (requires Claude API key)
+      </label>
+
+      <div id="scoring-settings-container" style="margin-left: 8px; ${scoringSettings.enableScoring ? '' : 'opacity: 0.5; pointer-events: none;'}">
+        <label style="display: block; margin: 10px 0; font-size: 15px; line-height: 1.5;">
+          Claude API Key:
+          <input type="password" id="scoring-api-key" value="${escapeHtml(scoringSettings.claudeApiKey || '')}"
+            placeholder="sk-ant-..."
+            style="display: block; width: 95%; margin-top: 4px; padding: 6px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;">
+        </label>
+
+        <label style="display: block; margin: 10px 0; font-size: 15px; line-height: 1.5;">
+          Model:
+          <select id="scoring-model" style="margin-left: 10px; padding: 6px 10px; font-size: 15px;">
+            <option value="claude-sonnet-4-20250514" ${scoringSettings.claudeModel === 'claude-sonnet-4-20250514' ? 'selected' : ''}>Claude Sonnet 4 (recommended)</option>
+            <option value="claude-haiku-4-5-20251001" ${scoringSettings.claudeModel === 'claude-haiku-4-5-20251001' ? 'selected' : ''}>Claude Haiku 4.5 (faster/cheaper)</option>
+          </select>
+        </label>
+
+        <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+          <label style="display: block; margin: 10px 0; font-size: 14px; line-height: 1.5;">
+            Like + Comment (70-100):
+            <input type="number" id="scoring-threshold-lc" value="${scoringSettings.thresholdLikeComment ?? 70}"
+              min="0" max="100" style="margin-left: 6px; padding: 5px 8px; width: 60px; font-size: 14px;">
+          </label>
+          <label style="display: block; margin: 10px 0; font-size: 14px; line-height: 1.5;">
+            Like only (40-69):
+            <input type="number" id="scoring-threshold-lo" value="${scoringSettings.thresholdLikeOnly ?? 40}"
+              min="0" max="100" style="margin-left: 6px; padding: 5px 8px; width: 60px; font-size: 14px;">
+          </label>
+        </div>
+        <div style="font-size:12px;color:#888;margin-bottom:12px;">0-39 = skip</div>
+
+        <label style="display: block; margin: 10px 0; font-size: 14px; line-height: 1.5;">
+          Target niches (comma-separated):
+          <input type="text" id="scoring-niches" value="${escapeHtml((scoringSettings.niches || []).join(', '))}"
+            placeholder="AI agents, payments, fintech"
+            style="display: block; width: 95%; margin-top: 4px; padding: 6px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;">
+        </label>
+
+        <label style="display: block; margin: 10px 0; font-size: 14px; line-height: 1.5;">
+          Influencers (boost author score):
+          <input type="text" id="scoring-influencers" value="${escapeHtml((scoringSettings.influencers || []).join(', '))}"
+            placeholder="Sam Altman, Patrick Collison"
+            style="display: block; width: 95%; margin-top: 4px; padding: 6px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;">
+        </label>
+
+        <label style="display: block; margin: 10px 0; font-size: 14px; line-height: 1.5;">
+          <strong style="color:#7c3aed;">Tier-1 Influencers</strong> (ALWAYS like + comment):
+          <input type="text" id="scoring-tier1" value="${escapeHtml((scoringSettings.tier1Influencers || []).join(', '))}"
+            placeholder="Spiros Margaris, Lex Fridman"
+            style="display: block; width: 95%; margin-top: 4px; padding: 6px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; border-color: #7c3aed;">
+        </label>
+
+        <button id="scoring-test-btn" style="
+          margin-top: 10px; padding: 8px 16px; background: #6c757d; color: #fff;
+          border: none; border-radius: 4px; cursor: pointer; font-size: 14px;
+        ">🧪 Test Claude Connection</button>
+        <div id="scoring-test-result" style="margin-top: 8px; font-size: 14px;"></div>
+      </div>
+
       <h3 style="margin: 22px 0 14px 0; color: #333; font-size: 17px;">Rate Limit Status</h3>
       <div id="settings-rate-status" style="font-size: 14px;"></div>
 
@@ -859,6 +1035,76 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     document.getElementById('reset-limits-btn').addEventListener('click', resetLimits);
     document.getElementById('ai-test-btn')?.addEventListener('click', testAIConnection);
     document.getElementById('ai-provider')?.addEventListener('change', onProviderChange);
+
+    // Scoring section listeners
+    document.getElementById('scoring-enable')?.addEventListener('change', (e) => {
+      const container = document.getElementById('scoring-settings-container');
+      if (container) {
+        container.style.opacity = e.target.checked ? '1' : '0.5';
+        container.style.pointerEvents = e.target.checked ? 'auto' : 'none';
+      }
+    });
+    document.getElementById('scoring-test-btn')?.addEventListener('click', async () => {
+      const resultEl = document.getElementById('scoring-test-result');
+      if (!resultEl) return;
+      resultEl.style.color = '#666';
+      resultEl.innerText = '🔄 Testing Claude connection...';
+      const testSettings = {
+        claudeApiKey: document.getElementById('scoring-api-key')?.value || '',
+        claudeModel: document.getElementById('scoring-model')?.value || 'claude-sonnet-4-20250514',
+      };
+      const result = await window.linkedInAutoApply.feedScoring.testConnection(testSettings);
+      resultEl.style.color = result.success ? '#28a745' : '#dc3545';
+      resultEl.innerText = result.success ? '✅ ' + result.message : '❌ ' + result.message;
+    });
+
+    // Toggle hashtag categories container visibility
+    document.getElementById('setting-enable-hashtags')?.addEventListener('change', (e) => {
+      const container = document.getElementById('hashtag-categories-container');
+      if (container) {
+        container.style.opacity = e.target.checked ? '1' : '0.5';
+        container.style.pointerEvents = e.target.checked ? 'auto' : 'none';
+      }
+    });
+
+    // Add new hashtag category
+    document.getElementById('add-hashtag-cat-btn')?.addEventListener('click', () => {
+      const list = document.getElementById('hashtag-categories-list');
+      if (!list) return;
+      const idx = list.querySelectorAll('.hashtag-cat-row').length;
+      const row = document.createElement('div');
+      row.className = 'hashtag-cat-row';
+      row.style.cssText = 'margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 6px; border-left: 3px solid #0073b1;';
+      row.innerHTML = `
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+          <input type="text" class="hashtag-cat-name" value=""
+            placeholder="Category name"
+            style="flex: 1; padding: 5px 8px; font-size: 14px; font-weight: bold; border: 1px solid #ccc; border-radius: 4px;">
+          <button class="remove-cat-btn" style="
+            background: #dc3545; color: #fff; border: none; border-radius: 4px;
+            padding: 4px 10px; cursor: pointer; font-size: 13px;">✕</button>
+        </div>
+        <input type="text" class="hashtag-cat-tags" value=""
+          placeholder="#fintech, #payments, #openbanking"
+          style="width: 95%; padding: 6px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;">
+      `;
+      list.appendChild(row);
+      row.querySelector('.remove-cat-btn').addEventListener('click', () => row.remove());
+    });
+
+    // Remove hashtag category buttons
+    document.querySelectorAll('.remove-cat-btn').forEach(btn => {
+      btn.addEventListener('click', () => btn.closest('.hashtag-cat-row')?.remove());
+    });
+
+    // Toggle day-keywords container visibility
+    document.getElementById('setting-enable-day-keywords')?.addEventListener('change', (e) => {
+      const container = document.getElementById('day-keywords-container');
+      if (container) {
+        container.style.opacity = e.target.checked ? '1' : '0.5';
+        container.style.pointerEvents = e.target.checked ? 'auto' : 'none';
+      }
+    });
   }
 
   /**
@@ -887,6 +1133,24 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    * Save engagement settings
    */
   async function saveSettings() {
+    // Parse hashtag categories from DOM rows
+    const hashtagCategories = {};
+    document.querySelectorAll('.hashtag-cat-row').forEach(row => {
+      const name = row.querySelector('.hashtag-cat-name')?.value?.trim();
+      const tagsRaw = row.querySelector('.hashtag-cat-tags')?.value || '';
+      if (name) {
+        hashtagCategories[name] = tagsRaw.split(',').map(s => s.trim()).filter(Boolean);
+      }
+    });
+
+    // Parse day-of-week keywords from text inputs
+    const dayKeywords = {};
+    for (let d = 0; d <= 6; d++) {
+      const input = document.getElementById(`day-kw-${d}`);
+      const raw = input?.value || '';
+      dayKeywords[d] = raw.split(',').map(s => s.trim()).filter(Boolean);
+    }
+
     const settings = {
       likeAll: document.getElementById('setting-like-all')?.checked || false,
       likeHiring: document.getElementById('setting-like-hiring')?.checked || false,
@@ -898,12 +1162,41 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       maxLikes: parseInt(document.getElementById('setting-max-likes')?.value || '30', 10),
       maxComments: parseInt(document.getElementById('setting-max-comments')?.value || '15', 10),
       maxReplies: parseInt(document.getElementById('setting-max-replies')?.value || '8', 10),
+      enableHashtags: document.getElementById('setting-enable-hashtags')?.checked || false,
+      hashtagCategories,
+      enableDayKeywords: document.getElementById('setting-enable-day-keywords')?.checked || false,
+      dayKeywords,
     };
 
     // Save AI settings
     await saveAISettings();
 
-    await chrome.storage.local.set({ feedEngagementSettings: settings });
+    // Save scoring settings
+    if (window.linkedInAutoApply.feedScoring) {
+      const nichesRaw = document.getElementById('scoring-niches')?.value || '';
+      const influencersRaw = document.getElementById('scoring-influencers')?.value || '';
+      const tier1Raw = document.getElementById('scoring-tier1')?.value || '';
+      await window.linkedInAutoApply.feedScoring.saveSettings({
+        enableScoring: document.getElementById('scoring-enable')?.checked || false,
+        claudeApiKey: document.getElementById('scoring-api-key')?.value || '',
+        claudeModel: document.getElementById('scoring-model')?.value || 'claude-sonnet-4-20250514',
+        thresholdLikeComment: parseInt(document.getElementById('scoring-threshold-lc')?.value || '70', 10),
+        thresholdLikeOnly: parseInt(document.getElementById('scoring-threshold-lo')?.value || '40', 10),
+        niches: nichesRaw.split(',').map(s => s.trim()).filter(Boolean),
+        influencers: influencersRaw.split(',').map(s => s.trim()).filter(Boolean),
+        tier1Influencers: tier1Raw.split(',').map(s => s.trim()).filter(Boolean),
+      });
+    }
+
+    try {
+      await chrome.storage.local.set({ feedEngagementSettings: settings });
+    } catch (err) {
+      if (err.message?.includes('Extension context invalidated')) {
+        alert('⚠️ Extension was reloaded. Please refresh the page and try again.');
+        return;
+      }
+      throw err;
+    }
     alert('✅ Settings saved! AI comments will be generated based on post context.');
     closePanel();
   }
@@ -925,12 +1218,14 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
   async function getAISettings() {
     try {
       if (typeof chrome === 'undefined' || !chrome.storage) {
-        return null;
+        return getDefaultAISettings();
       }
       const data = await chrome.storage.local.get('feedAISettings');
       return data?.feedAISettings || getDefaultAISettings();
     } catch (err) {
-      console.warn('[FeedUI] Failed to load AI settings:', err.message);
+      if (!err.message?.includes('Extension context invalidated')) {
+        console.warn('[FeedUI] Failed to load AI settings:', err.message);
+      }
       return getDefaultAISettings();
     }
   }
@@ -1014,11 +1309,163 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       endpoint: '',
     };
 
-    if (typeof chrome !== 'undefined' && chrome.storage) {
-      await chrome.storage.local.set({ feedAISettings: settings });
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage) {
+        await chrome.storage.local.set({ feedAISettings: settings });
+      }
+    } catch (err) {
+      if (!err.message?.includes('Extension context invalidated')) {
+        console.warn('[FeedUI] Failed to save AI settings:', err.message);
+      }
     }
-    
+
     return settings;
+  }
+
+  // ── Queue Panel ─────────────────────────────────────────────────────────
+
+  /**
+   * Render the scored post queue as a visual panel.
+   * @param {Array} queue - scored queue from feedEngagement
+   */
+  function showQueuePanel(queue) {
+    // Remove any existing queue panel
+    document.getElementById('feed-queue-panel')?.remove();
+
+    if (!queue || !queue.length) return;
+
+    const panel = document.createElement('div');
+    panel.id = 'feed-queue-panel';
+    panel.style.cssText = `
+      position: fixed; top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      background: #fff; border-radius: 10px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+      z-index: 10002; width: 92vw; max-width: 520px;
+      max-height: 80vh; display: flex; flex-direction: column;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    `;
+
+    const actionable = queue.filter(q => q.scoredAction !== 'skip');
+    const likeComment = queue.filter(q => q.scoredAction === 'like_comment');
+    const likeOnly = queue.filter(q => q.scoredAction === 'like_only');
+    const skipped = queue.filter(q => q.scoredAction === 'skip');
+
+    // Header
+    const header = document.createElement('div');
+    header.style.cssText = `
+      padding: 14px 18px; border-bottom: 1px solid #e8e8e8;
+      display: flex; justify-content: space-between; align-items: center;
+      background: #f8f9fa; border-radius: 10px 10px 0 0;
+    `;
+    header.innerHTML = `
+      <div>
+        <span style="font-size: 17px; font-weight: 700; color: #1a1a1a;">
+          QUEUE (${actionable.length})
+        </span>
+        <span style="font-size: 13px; color: #888; margin-left: 8px;">
+          ${likeComment.length} comment &middot; ${likeOnly.length} like &middot; ${skipped.length} skip
+        </span>
+      </div>
+    `;
+    const closeBtn = document.createElement('button');
+    closeBtn.innerText = '×';
+    closeBtn.style.cssText = 'background:none;border:none;font-size:22px;cursor:pointer;color:#666;';
+    closeBtn.addEventListener('click', () => panel.remove());
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+    makeDraggable(panel, header);
+
+    // Body
+    const body = document.createElement('div');
+    body.style.cssText = 'padding: 10px 14px; overflow-y: auto; flex: 1;';
+
+    // Render each post card (sorted by score desc)
+    const sorted = [...queue].sort((a, b) => (b.scoreResult?.score ?? 0) - (a.scoreResult?.score ?? 0));
+
+    for (const item of sorted) {
+      const { post, scoreResult, scoredAction, isTier1 } = item;
+      const score = scoreResult?.score ?? '?';
+      const themes = scoreResult?.themes || [];
+      const rationale = scoreResult?.rationale || '';
+      const lang = scoreResult?.language || '';
+
+      // Color coding
+      let color, actionLabel, bgColor;
+      if (scoredAction === 'like_comment') {
+        color = score >= 80 ? '#dc3545' : '#fd7e14';
+        actionLabel = 'like+comment';
+        bgColor = score >= 80 ? '#fff5f5' : '#fff8f0';
+      } else if (scoredAction === 'like_only') {
+        color = '#ffc107';
+        actionLabel = 'only like';
+        bgColor = '#fffdf0';
+      } else {
+        color = '#adb5bd';
+        actionLabel = 'skip';
+        bgColor = '#f8f9fa';
+      }
+
+      const ageStr = item.ageHours !== null
+        ? (item.ageHours < 1 ? Math.round(item.ageHours * 60) + 'min' : Math.round(item.ageHours) + 'h')
+        : '';
+
+      const card = document.createElement('div');
+      card.style.cssText = `
+        margin: 8px 0; padding: 12px 14px;
+        background: ${bgColor}; border-radius: 8px;
+        border-left: 4px solid ${color};
+      `;
+
+      const tier1Badge = isTier1
+        ? '<span style="background:#7c3aed;color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px;font-weight:600;">TIER-1</span>'
+        : '';
+
+      card.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+          <div style="flex:1;min-width:0;">
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <span style="font-size:22px;font-weight:800;color:${color};">${score}</span>
+              <span style="font-size:12px;font-weight:600;color:${color};text-transform:uppercase;">${actionLabel}</span>
+              ${tier1Badge}
+            </div>
+            <div style="margin-top:4px;font-size:14px;font-weight:600;color:#1a1a1a;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+              ${escapeHtml(post.author || 'Unknown')}
+              <span style="font-weight:400;color:#666;font-size:13px;margin-left:4px;">
+                ${escapeHtml(truncate(post.headline || '', 30))}
+              </span>
+              ${ageStr ? `<span style="color:#999;font-size:12px;margin-left:6px;">${ageStr} ago</span>` : ''}
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:6px;font-size:13px;color:#444;line-height:1.4;max-height:40px;overflow:hidden;">
+          "${escapeHtml(truncate(post.content || '', 120))}"
+        </div>
+        <div style="margin-top:6px;display:flex;align-items:center;gap:12px;font-size:12px;color:#888;">
+          <span>❤️ ${post.reactions || 0}</span>
+          <span>💬 ${post.comments || 0}</span>
+          ${lang ? `<span>🌐 ${escapeHtml(lang)}</span>` : ''}
+        </div>
+        ${themes.length ? `
+          <div style="margin-top:6px;">
+            ${themes.map(t => `<span style="display:inline-block;padding:1px 8px;margin:2px;background:#e8f0fe;border-radius:10px;font-size:11px;color:#0073b1;">${escapeHtml(t)}</span>`).join('')}
+          </div>
+        ` : ''}
+        ${rationale ? `
+          <div style="margin-top:5px;font-size:12px;color:#555;font-style:italic;">
+            AI: "${escapeHtml(truncate(rationale, 120))}"
+          </div>
+        ` : ''}
+      `;
+
+      body.appendChild(card);
+    }
+
+    panel.appendChild(body);
+    document.body.appendChild(panel);
+
+    // Auto-close after 8 seconds to not block engagement
+    setTimeout(() => panel.remove(), 8000);
   }
 
   // ── Utility Functions ──────────────────────────────────────────────────
@@ -1032,6 +1479,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     existing?.remove();
     const settingsPanel = document.getElementById('feed-settings-panel');
     if (settingsPanel) settingsPanel.remove();
+    document.getElementById('feed-queue-panel')?.remove();
     analysisPanel = null;
     currentProgressEl = null;
   }
@@ -1095,6 +1543,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     toggleAutoEngage,
     showAnalysisResults,
     showSettingsPanel,
+    showQueuePanel,
     closePanel,
     updateProgress,
     updateProgressBar,
