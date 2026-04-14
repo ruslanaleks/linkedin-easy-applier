@@ -327,6 +327,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         hashtagCategories: settings.hashtagCategories,
         enableDayKeywords: settings.enableDayKeywords,
         dayKeywords: settings.dayKeywords,
+        actionCooldownSec: settings.actionCooldownSec || 60,
         onProgress: (progress) => {
           if (progress.phase === 'scraping') {
             updateProgress(
@@ -356,6 +357,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
             updateProgressBar(75);
             // Render queue panel
             showQueuePanel(progress.queue);
+          } else if (progress.phase === 'scrolling') {
+            updateProgress(
+              `📜 ${progress.message}\n` +
+              `❤️ ${progress.stats.liked} | 💬 ${progress.stats.commented} | 🔁 ${progress.stats.replied} | ➕ ${progress.stats.followed}`
+            );
           } else if (progress.phase === 'engaging') {
             const rateStatus = progress.rateLimits;
             let statusLine =
@@ -408,6 +414,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       maxLikes: 30,
       maxComments: 15,
       maxReplies: 8,
+      actionCooldownSec: 60,
       enableHashtags: true,  // Monitor hashtags by category
       hashtagCategories: {
         'FinTech/Payments': ['#fintech', '#payments', '#openbanking', '#embeddedfinance', '#digitalbanking'],
@@ -882,6 +889,15 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           min="0" max="15" style="margin-left: 10px; padding: 6px 10px; width: 70px; font-size: 15px;">
       </label>
 
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        Cooldown between posts (seconds):
+        <input type="number" id="setting-action-cooldown" value="${settings.actionCooldownSec}"
+          min="10" max="300" style="margin-left: 10px; padding: 6px 10px; width: 70px; font-size: 15px;">
+        <span style="font-size: 12px; color: #888; display: block; margin-top: 4px;">
+          Wait time between engaging each post (10-300s, default 60s)
+        </span>
+      </label>
+
       <h3 style="margin: 22px 0 14px 0; color: #333; font-size: 17px;">🤖 AI Comments (xAI Grok)</h3>
       <div style="padding: 14px; background: #e8f4fd; border-radius: 6px; margin-bottom: 16px; font-size: 15px; line-height: 1.6;">
         <div style="margin-bottom: 8px;">
@@ -969,7 +985,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
         <div style="display: flex; gap: 16px; flex-wrap: wrap;">
           <label style="display: block; margin: 10px 0; font-size: 14px; line-height: 1.5;">
-            Like + Comment (70-100):
+            Like+Comment+Follow (85+):
+            <input type="number" id="scoring-threshold-lcf" value="${scoringSettings.thresholdLikeCommentFollow ?? 85}"
+              min="0" max="100" style="margin-left: 6px; padding: 5px 8px; width: 60px; font-size: 14px;">
+          </label>
+          <label style="display: block; margin: 10px 0; font-size: 14px; line-height: 1.5;">
+            Like + Comment (70-84):
             <input type="number" id="scoring-threshold-lc" value="${scoringSettings.thresholdLikeComment ?? 70}"
               min="0" max="100" style="margin-left: 6px; padding: 5px 8px; width: 60px; font-size: 14px;">
           </label>
@@ -1053,6 +1074,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         claudeApiKey: document.getElementById('scoring-api-key')?.value || '',
         claudeModel: document.getElementById('scoring-model')?.value || 'claude-sonnet-4-20250514',
       };
+      if (!window.linkedInAutoApply.feedScoring?.testConnection) {
+        resultEl.style.color = '#dc3545';
+        resultEl.innerText = '❌ Scoring module not loaded';
+        return;
+      }
       const result = await window.linkedInAutoApply.feedScoring.testConnection(testSettings);
       resultEl.style.color = result.success ? '#28a745' : '#dc3545';
       resultEl.innerText = result.success ? '✅ ' + result.message : '❌ ' + result.message;
@@ -1162,6 +1188,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       maxLikes: parseInt(document.getElementById('setting-max-likes')?.value || '30', 10),
       maxComments: parseInt(document.getElementById('setting-max-comments')?.value || '15', 10),
       maxReplies: parseInt(document.getElementById('setting-max-replies')?.value || '8', 10),
+      actionCooldownSec: parseInt(document.getElementById('setting-action-cooldown')?.value || '60', 10),
       enableHashtags: document.getElementById('setting-enable-hashtags')?.checked || false,
       hashtagCategories,
       enableDayKeywords: document.getElementById('setting-enable-day-keywords')?.checked || false,
@@ -1180,6 +1207,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         enableScoring: document.getElementById('scoring-enable')?.checked || false,
         claudeApiKey: document.getElementById('scoring-api-key')?.value || '',
         claudeModel: document.getElementById('scoring-model')?.value || 'claude-sonnet-4-20250514',
+        thresholdLikeCommentFollow: parseInt(document.getElementById('scoring-threshold-lcf')?.value || '85', 10),
         thresholdLikeComment: parseInt(document.getElementById('scoring-threshold-lc')?.value || '70', 10),
         thresholdLikeOnly: parseInt(document.getElementById('scoring-threshold-lo')?.value || '40', 10),
         niches: nichesRaw.split(',').map(s => s.trim()).filter(Boolean),
@@ -1347,6 +1375,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     `;
 
     const actionable = queue.filter(q => q.scoredAction !== 'skip');
+    const likeCommentFollow = queue.filter(q => q.scoredAction === 'like_comment_follow');
     const likeComment = queue.filter(q => q.scoredAction === 'like_comment');
     const likeOnly = queue.filter(q => q.scoredAction === 'like_only');
     const skipped = queue.filter(q => q.scoredAction === 'skip');
@@ -1364,7 +1393,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           QUEUE (${actionable.length})
         </span>
         <span style="font-size: 13px; color: #888; margin-left: 8px;">
-          ${likeComment.length} comment &middot; ${likeOnly.length} like &middot; ${skipped.length} skip
+          ${likeCommentFollow.length} follow &middot; ${likeComment.length} comment &middot; ${likeOnly.length} like &middot; ${skipped.length} skip
         </span>
       </div>
     `;
@@ -1392,7 +1421,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
       // Color coding
       let color, actionLabel, bgColor;
-      if (scoredAction === 'like_comment') {
+      if (scoredAction === 'like_comment_follow') {
+        color = '#7c3aed';
+        actionLabel = 'like+comment+follow';
+        bgColor = '#f5f0ff';
+      } else if (scoredAction === 'like_comment') {
         color = score >= 80 ? '#dc3545' : '#fd7e14';
         actionLabel = 'like+comment';
         bgColor = score >= 80 ? '#fff5f5' : '#fff8f0';
@@ -1463,9 +1496,6 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
     panel.appendChild(body);
     document.body.appendChild(panel);
-
-    // Auto-close after 8 seconds to not block engagement
-    setTimeout(() => panel.remove(), 8000);
   }
 
   // ── Utility Functions ──────────────────────────────────────────────────

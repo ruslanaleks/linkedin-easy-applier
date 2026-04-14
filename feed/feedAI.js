@@ -476,7 +476,8 @@ ${imageUrl}
       // data: URIs, blob: URIs, and relative paths)
       if (!imageUrl || !imageUrl.startsWith('http') ||
           /\bexpires=\d+\b/i.test(imageUrl) ||
-          /media\.licdn\.com\/dms\//i.test(imageUrl)) {
+          /media\.licdn\.com/i.test(imageUrl) ||
+          /licdn\.com/i.test(imageUrl)) {
         console.log('[FeedAI] Skipping image analysis: URL likely un-downloadable by API');
         return null;
       }

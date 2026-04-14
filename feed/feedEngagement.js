@@ -19,15 +19,9 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     MAX_FOLLOWS_PER_DAY: 60,
     MAX_REPLIES_PER_HOUR: 10,
     MAX_REPLIES_PER_DAY: 40,
-    // Delay ranges (ms) — 3-4 minute intervals between actions
-    MIN_LIKE_DELAY: 180000,     // 3 min
-    MAX_LIKE_DELAY: 240000,     // 4 min
-    MIN_COMMENT_DELAY: 180000,  // 3 min
-    MAX_COMMENT_DELAY: 240000,  // 4 min
-    MIN_FOLLOW_DELAY: 180000,   // 3 min
-    MAX_FOLLOW_DELAY: 240000,   // 4 min
-    MIN_REPLY_DELAY: 180000,    // 3 min
-    MAX_REPLY_DELAY: 240000,    // 4 min
+    // Default action cooldown (seconds) — overridden by user setting
+    DEFAULT_ACTION_COOLDOWN_SEC: 60,
+    // Delay ranges are now derived from actionCooldownSec at runtime
     // Scroll behavior
     MIN_SCROLL_DELAY: 2000,
     MAX_SCROLL_DELAY: 4000,
@@ -3329,6 +3323,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     hashtagCategories = {},
     enableDayKeywords = false,
     dayKeywords = {},
+    actionCooldownSec = CONFIG.DEFAULT_ACTION_COOLDOWN_SEC,
     onProgress = null,
   } = {}) {
     // Resolve today's day-of-week keywords
@@ -3363,6 +3358,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       monitoredHashtags: monitoredHashtags.length,
       enableDayKeywords,
       todayKeywords,
+      actionCooldownSec,
       commentProbability: CONFIG.ENGAGEMENT_PROBABILITY.comment,
       replyProbability: CONFIG.ENGAGEMENT_PROBABILITY.reply,
     });
@@ -3396,6 +3392,23 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     });
 
     try {
+      // Load previously-engaged post IDs for dedup (shared across rounds)
+      const engagedPostIds = await loadEngagedPostIds();
+      let roundNum = 0;
+      let emptyRounds = 0;
+      const processedElements = new WeakSet(); // track DOM elements across rounds
+
+      // ── Continuous engagement loop: scrape → filter → score → engage → scroll more ──
+      while (!abortController?.signal?.aborted) {
+        roundNum++;
+        console.log(`[FeedEngagement] ── Round ${roundNum} ──`);
+
+        // Check if session limits are already reached
+        if (sessionStats.liked >= maxLikes) {
+          console.log('[FeedEngagement] Session like limit reached, stopping');
+          break;
+        }
+
       // Scrape posts with scrolling
       const posts = await window.linkedInAutoApply.feed.scrapeWithScroll({
         scrollCount: 5,
@@ -3409,14 +3422,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
             });
           }
         },
-        signal: abortController.signal,
+        signal: abortController?.signal,
       });
 
       const postElements = window.linkedInAutoApply.feed.findPostElements();
       const keywords = (window.linkedInAutoApply?.settings?.jobKeywords) || [];
-
-      // Load previously-engaged post IDs for dedup
-      const engagedPostIds = await loadEngagedPostIds();
 
       // Pre-load scoring settings once (used inside the loop)
       const _scoring = window.linkedInAutoApply.feedScoring;
@@ -3435,17 +3445,20 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         if (abortController?.signal?.aborted) break;
 
         const postEl = postElements[i];
+        if (processedElements.has(postEl)) continue; // already handled in a previous round
+
         const post = await window.linkedInAutoApply.feed.parsePost(postEl, false);
 
-        if (!post) { sessionStats.skipped++; continue; }
-        if (post.author && isSelfName(post.author)) { sessionStats.skipped++; continue; }
-        if (post.id && engagedPostIds.has(post.id)) { sessionStats.skipped++; continue; }
-        if ((post.reactions || 0) < 10) { sessionStats.skipped++; continue; }
+        if (!post) { processedElements.add(postEl); sessionStats.skipped++; continue; }
+        if (post.author && isSelfName(post.author)) { processedElements.add(postEl); sessionStats.skipped++; continue; }
+        if (post.id && engagedPostIds.has(post.id)) { processedElements.add(postEl); sessionStats.skipped++; continue; }
+        if (isAlreadyLiked(postEl)) { processedElements.add(postEl); sessionStats.skipped++; continue; }
+        if ((post.reactions || 0) < 10) { processedElements.add(postEl); sessionStats.skipped++; continue; }
 
         const ageHours = parseTimestampToHours(post.timestamp);
-        if (ageHours !== null && ageHours > 48) { sessionStats.skipped++; continue; }
-        if (isRepost(postEl)) { sessionStats.skipped++; continue; }
-        if (isVacancy(post)) { sessionStats.skipped++; continue; }
+        if (ageHours !== null && ageHours > 48) { processedElements.add(postEl); sessionStats.skipped++; continue; }
+        if (isRepost(postEl)) { processedElements.add(postEl); sessionStats.skipped++; continue; }
+        if (isVacancy(post)) { processedElements.add(postEl); sessionStats.skipped++; continue; }
 
         preFiltered.push({ post, postEl, ageHours });
 
@@ -3558,6 +3571,10 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       // ════════════════════════════════════════════════════════════════
       const actionableQueue = scoredQueue.filter(q => q.scoredAction !== 'skip');
       const skippedByScore = scoredQueue.filter(q => q.scoredAction === 'skip');
+      // Mark skipped posts as processed so they're never re-scored
+      for (const item of skippedByScore) {
+        processedElements.add(item.postEl);
+      }
       sessionStats.skipped += skippedByScore.length;
 
       if (onProgress) {
@@ -3619,36 +3636,30 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           });
         };
 
-        // ── Like ──
+        // ── Like ── (always like if queued)
         if (sessionStats.liked < maxLikes) {
-          const shouldLike = scoredAction === 'like_only' || scoredAction === 'like_comment'
-            || Math.random() <= CONFIG.ENGAGEMENT_PROBABILITY.like;
-          if (shouldLike) {
+          if (scoredAction === 'like_only' || scoredAction === 'like_comment' || scoredAction === 'like_comment_follow') {
             const liked = await likePost(postEl, fullPost);
             if (liked) actionsPerformed.push('like');
           }
         }
 
-        // ── Comment ──
+        // ── Comment ── (always comment if queued as like_comment or like_comment_follow)
         let commentedOnThisPost = false;
-        const shouldComment = scoredAction === 'like_comment' && enableComments;
-        if (shouldComment && sessionStats.commented < maxComments) {
-          const prob = Math.random();
-          if (prob <= CONFIG.ENGAGEMENT_PROBABILITY.comment) {
-            const comment = await generateComment(fullPost);
-            if (comment) {
-              let commented = false;
-              const MAX_COMMENT_RETRIES = 3;
-              for (let retry = 0; retry < MAX_COMMENT_RETRIES; retry++) {
-                commented = await commentOnPost(postEl, comment, fullPost);
-                if (commented) {
-                  commentedOnThisPost = true;
-                  actionsPerformed.push('comment');
-                  break;
-                }
-                if (retry < MAX_COMMENT_RETRIES - 1) {
-                  await delay(randomDelay(2000, 4000));
-                }
+        if ((scoredAction === 'like_comment' || scoredAction === 'like_comment_follow') && enableComments && sessionStats.commented < maxComments) {
+          const comment = await generateComment(fullPost);
+          if (comment) {
+            let commented = false;
+            const MAX_COMMENT_RETRIES = 3;
+            for (let retry = 0; retry < MAX_COMMENT_RETRIES; retry++) {
+              commented = await commentOnPost(postEl, comment, fullPost);
+              if (commented) {
+                commentedOnThisPost = true;
+                actionsPerformed.push('comment');
+                break;
+              }
+              if (retry < MAX_COMMENT_RETRIES - 1) {
+                await delay(randomDelay(2000, 4000));
               }
             }
           }
@@ -3668,8 +3679,6 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
         // Reply to a comment (skip if we just commented to avoid self-reply)
         if (needReply && commentsExpanded) {
-          const prob = Math.random();
-          if (prob <= CONFIG.ENGAGEMENT_PROBABILITY.reply) {
             try {
               const comments = scrapeComments(postEl);
               const postLang = detectTextLanguage(fullPost?.content);
@@ -3700,7 +3709,6 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
             } catch (replyErr) {
               console.error('[FeedEngagement] Reply block error:', replyErr.message);
             }
-          }
         }
 
         // Reply to conversation threads (people who replied to YOUR comments)
@@ -3728,39 +3736,36 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           }
         }
 
-        // ── Follow ──
+        // ── Follow ── (queue-driven or probability-based fallback)
         if (enableFollows) {
-          const prob = Math.random();
-          if (prob <= CONFIG.ENGAGEMENT_PROBABILITY.follow) {
+          const shouldFollow = scoredAction === 'like_comment_follow';
+          if (shouldFollow) {
             const followed = await followAuthor(postEl, fullPost);
             if (followed) actionsPerformed.push('follow');
           }
         }
 
+        // Mark DOM element as processed regardless of actions
+        processedElements.add(postEl);
+
         // ── Single cooldown per post (only if we did something) ──
         if (actionsPerformed.length > 0) {
-          // Mark post as engaged so we never process it again
+          // Mark post ID as engaged so we never process it again (persisted)
           if (post.id) {
             engagedPostIds.add(post.id);
             saveEngagedPostIds(engagedPostIds); // fire-and-forget
           }
 
-          // Use the longest delay range among performed actions
-          let minDelay = CONFIG.MIN_LIKE_DELAY;
-          let maxDelayVal = CONFIG.MAX_LIKE_DELAY;
-          if (actionsPerformed.includes('comment')) {
-            minDelay = Math.max(minDelay, CONFIG.MIN_COMMENT_DELAY);
-            maxDelayVal = Math.max(maxDelayVal, CONFIG.MAX_COMMENT_DELAY);
-          }
-          if (actionsPerformed.includes('reply') || actionsPerformed.includes('threadReply')) {
-            minDelay = Math.max(minDelay, CONFIG.MIN_REPLY_DELAY);
-            maxDelayVal = Math.max(maxDelayVal, CONFIG.MAX_REPLY_DELAY);
-          }
+          // Cooldown between posts — use user-configurable setting
+          const cooldownMs = actionCooldownSec * 1000;
+          // Add ±20% jitter for human-like behavior
+          const minCooldown = Math.round(cooldownMs * 0.8);
+          const maxCooldown = Math.round(cooldownMs * 1.2);
 
           const actions = actionsPerformed.join('+');
-          console.log(`[FeedEngagement] Post done (${actions}), single cooldown...`);
+          console.log(`[FeedEngagement] Post done (${actions}), cooldown ${actionCooldownSec}s...`);
           await delayWithProgress(
-            randomDelay(minDelay, maxDelayVal),
+            randomDelay(minCooldown, maxCooldown),
             abortController?.signal,
             (tick) => emitWaiting(actions, tick),
           );
@@ -3777,6 +3782,38 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           });
         }
       }
+
+      console.log(`[FeedEngagement] Round ${roundNum} complete:`, sessionStats);
+
+      // Track consecutive empty rounds — stop after 3 to avoid infinite scrolling
+      if (actionableQueue.length === 0) {
+        emptyRounds = (emptyRounds || 0) + 1;
+        console.log(`[FeedEngagement] No actionable posts this round (${emptyRounds}/3), scrolling for more...`);
+        if (emptyRounds >= 3) {
+          console.log('[FeedEngagement] 3 empty rounds in a row, stopping');
+          break;
+        }
+      } else {
+        emptyRounds = 0;
+      }
+
+      // Scroll down to load fresh posts for the next round
+      if (!abortController?.signal?.aborted && sessionStats.liked < maxLikes) {
+        if (onProgress) {
+          onProgress({
+            phase: 'scrolling',
+            message: `Scrolling for more posts (round ${roundNum + 1})...`,
+            stats: { ...sessionStats },
+          });
+        }
+        // Scroll several times to get past already-processed posts
+        for (let s = 0; s < 3; s++) {
+          window.scrollBy(0, CONFIG.SCROLL_PIXELS);
+          await delay(randomDelay(CONFIG.MIN_SCROLL_DELAY, CONFIG.MAX_SCROLL_DELAY));
+        }
+      }
+
+      } // end while (continuous engagement loop)
 
       console.log('[FeedEngagement] Auto-engagement complete:', sessionStats);
 

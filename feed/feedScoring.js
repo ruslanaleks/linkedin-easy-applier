@@ -12,8 +12,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     ENDPOINT: 'https://api.anthropic.com/v1/messages',
     DEFAULT_MODEL: 'claude-sonnet-4-20250514',
     API_TIMEOUT: 45000,       // 45s — batch needs more time
-    RETRY_COUNT: 1,
-    RETRY_DELAY: 2000,
+    RETRY_COUNT: 4,
+    RETRY_DELAY: 3000,
     MAX_CONTENT_LENGTH: 1200, // per-post truncation (shorter to fit batch)
     API_VERSION: '2023-06-01',
     BATCH_SIZE: 8,            // target batch size (5-10 range)
@@ -21,7 +21,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     MAX_TOKENS: 4096,         // enough for 10 post results
 
     // Score thresholds
-    THRESHOLD_LIKE_COMMENT: 70,  // 70-100 → like + comment
+    THRESHOLD_LIKE_COMMENT_FOLLOW: 85, // 85-100 → like + comment + follow
+    THRESHOLD_LIKE_COMMENT: 70,  // 70-84  → like + comment
     THRESHOLD_LIKE_ONLY: 40,     // 40-69  → only like
     // 0-39 → skip
 
@@ -69,6 +70,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       enableScoring: false,
       claudeApiKey: '',
       claudeModel: CONFIG.DEFAULT_MODEL,
+      thresholdLikeCommentFollow: CONFIG.THRESHOLD_LIKE_COMMENT_FOLLOW,
       thresholdLikeComment: CONFIG.THRESHOLD_LIKE_COMMENT,
       thresholdLikeOnly: CONFIG.THRESHOLD_LIKE_ONLY,
       niches: ['AI agents', 'payments', 'startup funding', 'engineering', 'fintech'],
@@ -173,7 +175,7 @@ Each element must have this shape:
     "freshness": <0-10>
   },
   "themes": [<detected theme strings, e.g. "AI Agents", "PCI-DSS">],
-  "action": "<like_comment | like_only | skip>",
+  "action": "<like_comment_follow | like_comment | like_only | skip>",
   "language": "<English | Russian | Spanish | Other>",
   "rationale": "<one sentence: why this post is or is not valuable>"
 }`;
@@ -272,7 +274,10 @@ Text: ${sanitize(truncate(post.content || '', CONFIG.MAX_CONTENT_LENGTH))}`;
         } catch (err) {
           console.warn(`[FeedScoring] Batch API attempt ${attempt + 1} failed:`, err.message);
           if (attempt < CONFIG.RETRY_COUNT) {
-            await new Promise(r => setTimeout(r, CONFIG.RETRY_DELAY));
+            // Exponential backoff: 3s, 6s, 12s, 24s
+            const backoff = CONFIG.RETRY_DELAY * Math.pow(2, attempt);
+            console.log(`[FeedScoring] Retrying in ${backoff / 1000}s...`);
+            await new Promise(r => setTimeout(r, backoff));
           } else {
             console.error('[FeedScoring] All retries exhausted for batch of', toScore.length);
             // Return items without scores — they'll get fallback action
@@ -334,7 +339,7 @@ Text: ${sanitize(truncate(post.content || '', CONFIG.MAX_CONTENT_LENGTH))}`;
 
       let scoredAction;
       if (authorIsTier1) {
-        scoredAction = 'like_comment'; // Tier-1: ALWAYS like + comment
+        scoredAction = 'like_comment_follow'; // Tier-1: ALWAYS like + comment + follow
       } else {
         scoredAction = getAction(scoreResult, settings);
       }
@@ -348,6 +353,7 @@ Text: ${sanitize(truncate(post.content || '', CONFIG.MAX_CONTENT_LENGTH))}`;
     });
 
     console.log('[FeedScoring] Batch scored:', queue.length, 'posts',
+      '| like+comment+follow:', queue.filter(q => q.scoredAction === 'like_comment_follow').length,
       '| like+comment:', queue.filter(q => q.scoredAction === 'like_comment').length,
       '| like only:', queue.filter(q => q.scoredAction === 'like_only').length,
       '| skip:', queue.filter(q => q.scoredAction === 'skip').length,
@@ -368,8 +374,10 @@ Text: ${sanitize(truncate(post.content || '', CONFIG.MAX_CONTENT_LENGTH))}`;
   function getAction(scoreResult, settings) {
     if (!scoreResult) return 'like_only'; // fallback when scoring unavailable
     const { score } = scoreResult;
+    const tLCF = settings?.thresholdLikeCommentFollow ?? CONFIG.THRESHOLD_LIKE_COMMENT_FOLLOW;
     const tLC = settings?.thresholdLikeComment ?? CONFIG.THRESHOLD_LIKE_COMMENT;
     const tLO = settings?.thresholdLikeOnly ?? CONFIG.THRESHOLD_LIKE_ONLY;
+    if (score >= tLCF) return 'like_comment_follow';
     if (score >= tLC) return 'like_comment';
     if (score >= tLO) return 'like_only';
     return 'skip';
