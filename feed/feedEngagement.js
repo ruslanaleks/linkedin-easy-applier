@@ -2278,69 +2278,53 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         return false;
       }
 
+      // Identify the main post composer up front — we must never type into it,
+      // otherwise the reply would be published as a top-level comment on a post
+      // that was only meant to be liked.
+      const mainComposer = findCommentInput(postEl);
+
+      // Snapshot existing textboxes so we can detect the NEW reply composer by
+      // set difference. Taking "last textbox in DOM" is unsafe because the main
+      // composer often sits at the bottom of the post.
+      const textboxSelector = '[role="textbox"][contenteditable="true"], div[contenteditable="true"]';
+      const preSet = new Set([
+        ...safeQuerySelectorAll(postEl, textboxSelector),
+        ...(postEl.parentElement ? safeQuerySelectorAll(postEl.parentElement, textboxSelector) : []),
+      ]);
+
       replyBtn.click();
       await delay(randomDelay(1000, 2000));
 
-      // Find the reply input (appears within or near the comment after clicking Reply)
+      // Find the reply input — must be (1) newly appeared after the click, and
+      // (2) a descendant of the comment's subtree (walking up parents), and
+      // (3) not the main post composer.
       let input = null;
-      // Count existing textboxes before click to detect the new one
-      const preExisting = safeQuerySelectorAll(postEl, '[role="textbox"][contenteditable="true"], div[contenteditable="true"]');
-      const preCount = preExisting.length;
-
       for (let attempt = 0; attempt < 5; attempt++) {
-        // Strategy 1: Look directly inside or near the comment element
-        input = safeQuerySelector(commentEl, '[role="textbox"][contenteditable="true"]');
-        if (!input && commentEl.parentElement) {
-          input = safeQuerySelector(commentEl.parentElement, '[role="textbox"][contenteditable="true"]');
-        }
-        // Walk up a few levels from comment to find sibling reply box
-        if (!input) {
-          let parent = commentEl.parentElement;
-          for (let depth = 0; depth < 4 && parent && parent !== postEl; depth++) {
-            input = safeQuerySelector(parent, '[role="textbox"][contenteditable="true"]');
-            if (input) break;
-            parent = parent.parentElement;
+        let scope = commentEl;
+        const stopAt = postEl.parentElement;
+        for (let depth = 0; depth < 6 && scope && scope !== stopAt; depth++) {
+          const candidates = safeQuerySelectorAll(scope, textboxSelector);
+          const fresh = candidates.find(el => !preSet.has(el) && el !== mainComposer);
+          if (fresh) {
+            input = fresh;
+            console.log('[FeedEngagement] Found reply input via comment-scope diff at depth', depth);
+            break;
           }
+          scope = scope.parentElement;
         }
 
-        // Strategy 2: detect newly appeared textbox (wasn't there before Reply click)
-        if (!input) {
-          // Search both postEl and its parent (LinkedIn may render reply box outside post)
-          const searchRoots = [postEl];
-          if (postEl.parentElement) searchRoots.push(postEl.parentElement);
-          for (const root of searchRoots) {
-            const allEditable = safeQuerySelectorAll(root, '[role="textbox"][contenteditable="true"], div[contenteditable="true"]');
-            if (allEditable.length > preCount) {
-              input = allEditable[allEditable.length - 1]; // the new one
-              console.log('[FeedEngagement] Found reply input via new-textbox detection');
-              break;
-            }
-          }
-        }
-
-        // Strategy 3: last contenteditable in the post or parent (fallback)
-        if (!input) {
-          const searchRoots = [postEl];
-          if (postEl.parentElement) searchRoots.push(postEl.parentElement);
-          for (const root of searchRoots) {
-            const allEditable = safeQuerySelectorAll(root, '[role="textbox"][contenteditable="true"], div[contenteditable="true"]');
-            if (allEditable.length > 0) {
-              input = allEditable[allEditable.length - 1];
-              break;
-            }
-          }
-        }
-
-        if (input) {
-          console.log('[FeedEngagement] Reply input found on attempt', attempt + 1);
-          break;
-        }
+        if (input) break;
         console.log('[FeedEngagement] Reply input not found, attempt', attempt + 1, '/ 5');
         await delay(randomDelay(600, 1200));
       }
 
       if (!input) {
-        console.error('[FeedEngagement] Reply input not found after 5 attempts');
+        console.error('[FeedEngagement] Reply input not found — aborting to avoid commenting on post');
+        return false;
+      }
+
+      if (input === mainComposer) {
+        console.error('[FeedEngagement] Resolved reply input is the main post composer — refusing to type');
         return false;
       }
 
@@ -2384,6 +2368,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         // Look for submit near the reply input
         let parent = input.parentElement;
         for (let depth = 0; depth < 8 && parent && parent !== postEl; depth++) {
+          // Stop walking up once we enter an ancestor that also contains the
+          // main post composer — its submit button must not be confused with
+          // the reply submit button.
+          if (mainComposer && parent.contains(mainComposer)) break;
+
           const btns = safeQuerySelectorAll(parent, 'button');
           for (const btn of btns) {
             if (isSubmitButton(btn)) {
@@ -3479,7 +3468,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       // PASS 2: Score (batch AI or legacy keyword matching)
       // ════════════════════════════════════════════════════════════════
       const scoringEnabled = _scoring && _scoringSettings?.enableScoring;
-      let scoredQueue = []; // { post, postEl, ageHours, scoreResult, scoredAction, isTier1, engageReason }
+      let scoredQueue = []; // { post, postEl, ageHours, scoreResult, scoredAction, isTier1, influencer, engageReason }
 
       if (scoringEnabled && preFiltered.length > 0) {
         // Batch scoring via Claude
@@ -3556,12 +3545,26 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
             if (matched.length > 0) { shouldEngage = true; engageReason = `day keywords (${matched.join(', ')})`; }
           }
 
+          // Legacy path: still honor influencerList so Tier-1 forces like+comment+follow
+          const matched = _scoring?.matchInfluencer
+            ? _scoring.matchInfluencer(post.author, _scoringSettings?.influencerList || [])
+            : null;
+          let legacyAction = shouldEngage ? 'like_only' : 'skip';
+          if (matched && matched.tier === 1) {
+            legacyAction = 'like_comment_follow';
+            if (!shouldEngage) engageReason = 'tier-1 influencer';
+          }
+
           scoredQueue.push({
             ...item,
             scoreResult: null,
-            scoredAction: shouldEngage ? 'like_only' : 'skip',
-            isTier1: false,
-            engageReason: shouldEngage ? engageReason : 'no match',
+            scoredAction: legacyAction,
+            isTier1: !!(matched && matched.tier === 1),
+            influencer: matched ? {
+              id: matched.id, name: matched.name, title: matched.title || '',
+              reason: matched.reason || '', tier: matched.tier,
+            } : null,
+            engageReason: shouldEngage ? engageReason : (matched ? engageReason : 'no match'),
           });
         }
       }
@@ -3601,7 +3604,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           break;
         }
 
-        const { post, postEl, scoreResult, scoredAction, engageReason } = actionableQueue[i];
+        const { post, postEl, scoreResult, scoredAction, engageReason, influencer } = actionableQueue[i];
 
         // Expand "see more" for posts we'll actually engage with
         const fullPost = await window.linkedInAutoApply.feed.parsePost(postEl, true) || post;
@@ -3611,7 +3614,13 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           reason: engageReason,
           score: scoreResult?.score ?? null,
           action: scoredAction,
+          influencer: influencer?.name || null,
         });
+
+        // Stats: record that we've seen this influencer's post
+        if (influencer?.id && _scoring?.updateInfluencerStats) {
+          _scoring.updateInfluencerStats(influencer.id, 'seen', post?.id).catch(() => {});
+        }
 
         // Check session limits
         if (sessionStats.liked >= maxLikes) {
@@ -3656,6 +3665,10 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
               if (commented) {
                 commentedOnThisPost = true;
                 actionsPerformed.push('comment');
+                // Stats: record comment for influencer week target
+                if (influencer?.id && _scoring?.updateInfluencerStats) {
+                  _scoring.updateInfluencerStats(influencer.id, 'commented', post?.id).catch(() => {});
+                }
                 break;
               }
               if (retry < MAX_COMMENT_RETRIES - 1) {
@@ -3754,6 +3767,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           if (post.id) {
             engagedPostIds.add(post.id);
             saveEngagedPostIds(engagedPostIds); // fire-and-forget
+          }
+
+          // Stats: if we liked but didn't comment on an influencer's post, mark 'ok'
+          if (influencer?.id && _scoring?.updateInfluencerStats
+              && actionsPerformed.includes('like') && !actionsPerformed.includes('comment')) {
+            _scoring.updateInfluencerStats(influencer.id, 'ok', post?.id).catch(() => {});
           }
 
           // Cooldown between posts — use user-configurable setting

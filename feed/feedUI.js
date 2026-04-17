@@ -24,10 +24,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     panel: `
       position: fixed; top: 50%; left: 50%;
       transform: translate(-50%, -50%);
-      background: #fff; border-radius: 8px;
+      background: #fff; color: #222; border-radius: 8px;
       box-shadow: 0 4px 20px rgba(0,0,0,0.2);
       z-index: 10001; width: 90vw; max-width: 700px;
       max-height: 85vh; display: flex; flex-direction: column;
+      color-scheme: light;
     `,
     panelHeader: `
       display: flex; justify-content: space-between; align-items: center;
@@ -74,6 +75,131 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       color: #0073b1;
     `,
   };
+
+  // ── Theme ──────────────────────────────────────────────────────────────
+
+  const UI_SETTINGS_KEY = 'feedUiSettings';
+  const DEFAULT_UI_SETTINGS = { theme: 'auto' };
+
+  async function loadUiSettings() {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage) return { ...DEFAULT_UI_SETTINGS };
+      const data = await chrome.storage.local.get(UI_SETTINGS_KEY);
+      return { ...DEFAULT_UI_SETTINGS, ...(data?.[UI_SETTINGS_KEY] || {}) };
+    } catch {
+      return { ...DEFAULT_UI_SETTINGS };
+    }
+  }
+
+  async function saveUiSettings(partial) {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage) return;
+      const current = await loadUiSettings();
+      await chrome.storage.local.set({ [UI_SETTINGS_KEY]: { ...current, ...partial } });
+    } catch {}
+  }
+
+  function resolveTheme(pref) {
+    if (pref === 'light' || pref === 'dark') return pref;
+    try {
+      return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch {
+      return 'light';
+    }
+  }
+
+  // Inject a single global <style> with rules for both panels; selectors are
+  // scoped to panel IDs + [data-theme="dark"] so light stays untouched.
+  function ensureThemeStyle() {
+    if (document.getElementById('feed-panel-theme-style')) return;
+    const style = document.createElement('style');
+    style.id = 'feed-panel-theme-style';
+    style.textContent = `
+      #feed-settings-panel[data-theme="dark"],
+      #feed-queue-panel[data-theme="dark"],
+      #feed-analysis-panel[data-theme="dark"] {
+        background: #1b1f23 !important;
+        color: #e6e6e6 !important;
+        color-scheme: dark !important;
+      }
+      #feed-settings-panel[data-theme="dark"] h1,
+      #feed-settings-panel[data-theme="dark"] h2,
+      #feed-settings-panel[data-theme="dark"] h3,
+      #feed-settings-panel[data-theme="dark"] h4,
+      #feed-settings-panel[data-theme="dark"] label,
+      #feed-settings-panel[data-theme="dark"] strong,
+      #feed-settings-panel[data-theme="dark"] span,
+      #feed-settings-panel[data-theme="dark"] div,
+      #feed-settings-panel[data-theme="dark"] p {
+        color: #e6e6e6;
+      }
+      #feed-settings-panel[data-theme="dark"] input[type="text"],
+      #feed-settings-panel[data-theme="dark"] input[type="password"],
+      #feed-settings-panel[data-theme="dark"] input[type="number"],
+      #feed-settings-panel[data-theme="dark"] textarea,
+      #feed-settings-panel[data-theme="dark"] select {
+        background: #2a3036 !important;
+        color: #e6e6e6 !important;
+        border-color: #4a5056 !important;
+      }
+      #feed-settings-panel[data-theme="dark"] input::placeholder,
+      #feed-settings-panel[data-theme="dark"] textarea::placeholder {
+        color: #8892a0 !important;
+      }
+      #feed-settings-panel[data-theme="dark"] .inf-tier-block,
+      #feed-settings-panel[data-theme="dark"] .hashtag-cat-row,
+      #feed-settings-panel[data-theme="dark"] #settings-rate-status > div,
+      #feed-settings-panel[data-theme="dark"] #scoring-settings-container,
+      #feed-settings-panel[data-theme="dark"] #hashtag-categories-container,
+      #feed-settings-panel[data-theme="dark"] #day-keywords-container {
+        background: #262b30 !important;
+      }
+      #feed-settings-panel[data-theme="dark"] .inf-row {
+        border-bottom-color: #3a4146 !important;
+      }
+      #feed-settings-panel[data-theme="dark"] hr {
+        border-color: #3a4146 !important;
+      }
+      /* Queue cards: override light pastel backgrounds with dark equivalents,
+         keep the colored left-border accent untouched. */
+      #feed-queue-panel[data-theme="dark"] > div > div[style*="background: #f5f0ff"],
+      #feed-queue-panel[data-theme="dark"] > div > div[style*="background: #fff5f5"],
+      #feed-queue-panel[data-theme="dark"] > div > div[style*="background: #fff8f0"],
+      #feed-queue-panel[data-theme="dark"] > div > div[style*="background: #fffdf0"],
+      #feed-queue-panel[data-theme="dark"] > div > div[style*="background: #f8f9fa"] {
+        background: #262b30 !important;
+        color: #e6e6e6 !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  async function applyPanelTheme(panelEl) {
+    if (!panelEl) return;
+    ensureThemeStyle();
+    const uiSettings = await loadUiSettings();
+    const theme = resolveTheme(uiSettings.theme);
+    panelEl.dataset.theme = theme;
+    // Also set color-scheme inline so native form controls follow, even if
+    // the panel's own cssText still hard-codes color-scheme: light.
+    panelEl.style.colorScheme = theme;
+    if (theme === 'dark') {
+      panelEl.style.background = '#1b1f23';
+      panelEl.style.color = '#e6e6e6';
+    }
+  }
+
+  // React to OS theme changes while a panel is open (auto mode only)
+  try {
+    window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', async () => {
+      const uiSettings = await loadUiSettings();
+      if (uiSettings.theme !== 'auto') return;
+      ['feed-settings-panel', 'feed-queue-panel', 'feed-analysis-panel'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) applyPanelTheme(el);
+      });
+    });
+  } catch {}
 
   // ── Drag Helper ────────────────────────────────────────────────────────
 
@@ -516,6 +642,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
     analysisPanel.appendChild(body);
     document.body.appendChild(analysisPanel);
+    applyPanelTheme(analysisPanel);
 
     currentProgressEl = progressText;
   }
@@ -688,6 +815,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     body.appendChild(btnRow);
     analysisPanel.appendChild(body);
     document.body.appendChild(analysisPanel);
+    applyPanelTheme(analysisPanel);
   }
 
   /**
@@ -765,6 +893,20 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
     // Engagement options
     body.innerHTML = `
+      <h3 style="margin: 0 0 10px 0; color: #333; font-size: 17px;">Appearance</h3>
+      <div style="display:flex; gap:14px; align-items:center; margin-bottom:18px; font-size:14px;">
+        <span style="color:#666;">Theme:</span>
+        <label style="cursor:pointer;">
+          <input type="radio" name="ui-theme" value="light" style="vertical-align:middle; margin-right:4px;"> Light
+        </label>
+        <label style="cursor:pointer;">
+          <input type="radio" name="ui-theme" value="dark" style="vertical-align:middle; margin-right:4px;"> Dark
+        </label>
+        <label style="cursor:pointer;">
+          <input type="radio" name="ui-theme" value="auto" style="vertical-align:middle; margin-right:4px;"> Auto (system)
+        </label>
+      </div>
+
       <h3 style="margin: 0 0 14px 0; color: #333; font-size: 17px;">Engagement Options</h3>
 
       <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
@@ -1009,19 +1151,15 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
             style="display: block; width: 95%; margin-top: 4px; padding: 6px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;">
         </label>
 
-        <label style="display: block; margin: 10px 0; font-size: 14px; line-height: 1.5;">
-          Influencers (boost author score):
-          <input type="text" id="scoring-influencers" value="${escapeHtml((scoringSettings.influencers || []).join(', '))}"
-            placeholder="Sam Altman, Patrick Collison"
-            style="display: block; width: 95%; margin-top: 4px; padding: 6px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;">
-        </label>
-
-        <label style="display: block; margin: 10px 0; font-size: 14px; line-height: 1.5;">
-          <strong style="color:#7c3aed;">Tier-1 Influencers</strong> (ALWAYS like + comment):
-          <input type="text" id="scoring-tier1" value="${escapeHtml((scoringSettings.tier1Influencers || []).join(', '))}"
-            placeholder="Spiros Margaris, Lex Fridman"
-            style="display: block; width: 95%; margin-top: 4px; padding: 6px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px; border-color: #7c3aed;">
-        </label>
+        <div id="influencer-section" style="margin: 14px 0 6px 0;">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+            <strong style="font-size:14px; color:#333;">Influencers</strong>
+            <button type="button" id="inf-add-btn" style="
+              padding: 5px 10px; background: #0073b1; color: #fff; border: none;
+              border-radius: 4px; cursor: pointer; font-size: 12px;">➕ Add influencer</button>
+          </div>
+          <div id="inf-tier-container"><!-- populated by renderInfluencerSection() --></div>
+        </div>
 
         <button id="scoring-test-btn" style="
           margin-top: 10px; padding: 8px 16px; background: #6c757d; color: #fff;
@@ -1048,8 +1186,26 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     analysisPanel.appendChild(body);
     document.body.appendChild(analysisPanel);
 
+    // Apply saved theme to this panel
+    applyPanelTheme(analysisPanel);
+
     // Update rate status
     updateSettingsRateStatus();
+
+    // Render influencer section (per-tier containers, live stats)
+    renderInfluencerSection(scoringSettings.influencerList || []);
+    document.getElementById('inf-add-btn')?.addEventListener('click', () => addInfluencerRow(null));
+
+    // Theme toggle wiring
+    const uiSettings = await loadUiSettings();
+    document.querySelectorAll('input[name="ui-theme"]').forEach(r => {
+      r.checked = r.value === uiSettings.theme;
+      r.addEventListener('change', async () => {
+        if (!r.checked) return;
+        await saveUiSettings({ theme: r.value });
+        applyPanelTheme(analysisPanel);
+      });
+    });
 
     // Event listeners
     document.getElementById('save-settings-btn').addEventListener('click', saveSettings);
@@ -1155,6 +1311,169 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     `;
   }
 
+  // ── Influencer Section ─────────────────────────────────────────────────
+
+  const TIER_META = {
+    1: { color: '#7c3aed', label: 'Tier 1', goal: '2 comments/week' },
+    2: { color: '#0073b1', label: 'Tier 2', goal: '1 comment/week' },
+    3: { color: '#6c757d', label: 'Tier 3', goal: 'tracked only' },
+  };
+
+  function formatRelativeTime(ts) {
+    if (!ts) return 'never';
+    const diff = Date.now() - ts;
+    if (diff < 0) return 'just now';
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + 'm ago';
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return hours + 'h ago';
+    const days = Math.floor(hours / 24);
+    return days + 'd ago';
+  }
+
+  function statusBadge(status, tier, targetMet) {
+    const labels = { new: 'new', ok: 'ok', commented: '1 comment' };
+    const bg = targetMet ? '#28a745' : (status === 'commented' ? '#28a745' : status === 'ok' ? '#ffc107' : '#adb5bd');
+    const fg = status === 'ok' && !targetMet ? '#333' : '#fff';
+    return `<span style="background:${bg}; color:${fg}; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600;">${labels[status] || status}</span>`;
+  }
+
+  function renderInfluencerSection(list) {
+    const container = document.getElementById('inf-tier-container');
+    if (!container) return;
+
+    const summary = window.linkedInAutoApply.feedScoring?.getTierSummary
+      ? window.linkedInAutoApply.feedScoring.getTierSummary({ influencerList: list })
+      : null;
+
+    container.innerHTML = '';
+    for (const tier of [1, 2, 3]) {
+      const meta = TIER_META[tier];
+      const tierInfs = list.filter(i => i.tier === tier);
+      const tierSum = summary?.[tier] || { weekComments: 0, target: 0, targetMet: true, totalPostsSeen: 0 };
+      const pct = tierSum.target > 0 ? Math.min(100, Math.round((tierSum.weekComments / tierSum.target) * 100)) : 100;
+
+      const tierBlock = document.createElement('div');
+      tierBlock.className = 'inf-tier-block';
+      tierBlock.dataset.tier = String(tier);
+      tierBlock.style.cssText = `margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 6px; border-left: 3px solid ${meta.color};`;
+      tierBlock.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <div>
+            <strong style="color:${meta.color}; font-size:13px;">${meta.label}</strong>
+            <span style="color:#666; font-size:11px; margin-left:6px;">goal: ${meta.goal}</span>
+          </div>
+          <div style="font-size:11px; color:#666;">
+            week: <strong>${tierSum.weekComments}</strong>/${tierSum.target || '∞'} comments ·
+            ${tierInfs.length} ppl · ${tierSum.totalPostsSeen} posts
+          </div>
+        </div>
+        <div style="background:#e9ecef; border-radius:6px; height:6px; overflow:hidden; margin-bottom:8px;">
+          <div style="background:${tierSum.targetMet ? '#28a745' : meta.color}; width:${pct}%; height:100%; transition:width .3s;"></div>
+        </div>
+        <div class="inf-rows"></div>
+      `;
+      container.appendChild(tierBlock);
+
+      const rowsEl = tierBlock.querySelector('.inf-rows');
+      if (tierInfs.length === 0) {
+        rowsEl.innerHTML = `<div style="color:#999; font-size:12px; font-style:italic; padding:6px 0;">No influencers in ${meta.label}. Click "Add influencer" to create one.</div>`;
+      } else {
+        for (const inf of tierInfs) buildInfluencerRow(rowsEl, inf, tierSum.targetMet);
+      }
+    }
+  }
+
+  function buildInfluencerRow(parentEl, inf, targetMet) {
+    const row = document.createElement('div');
+    row.className = 'inf-row';
+    row.dataset.id = inf.id;
+    row.style.cssText = 'display:flex; align-items:center; gap:6px; padding:6px 4px; border-bottom:1px solid #e9ecef; flex-wrap:wrap;';
+
+    const stats = inf.stats || {};
+    const lastSeen = formatRelativeTime(stats.lastSeenAt);
+    const weekStatus = stats.weekStatus || 'new';
+
+    row.innerHTML = `
+      <input type="checkbox" class="inf-enabled" ${inf.enabled !== false ? 'checked' : ''} title="Enabled">
+      <input type="text" class="inf-name" value="${escapeHtml(inf.name || '')}" placeholder="Name"
+        style="flex:1 1 130px; min-width:100px; padding:4px 6px; font-size:12px; border:1px solid #ccc; border-radius:3px;">
+      <input type="text" class="inf-title" value="${escapeHtml(inf.title || '')}" placeholder="Title / role"
+        style="flex:1 1 140px; min-width:100px; padding:4px 6px; font-size:12px; border:1px solid #ccc; border-radius:3px;">
+      <select class="inf-tier" style="padding:4px 6px; font-size:12px; border:1px solid #ccc; border-radius:3px;">
+        <option value="1" ${inf.tier === 1 ? 'selected' : ''}>T1</option>
+        <option value="2" ${inf.tier === 2 ? 'selected' : ''}>T2</option>
+        <option value="3" ${inf.tier === 3 ? 'selected' : ''}>T3</option>
+      </select>
+      ${statusBadge(weekStatus, inf.tier, targetMet)}
+      <span style="font-size:11px; color:#666;">${lastSeen}</span>
+      <button type="button" class="inf-del-btn" title="Delete" style="
+        background:#dc3545; color:#fff; border:none; border-radius:3px;
+        padding:3px 8px; cursor:pointer; font-size:11px;">✕</button>
+      <input type="hidden" class="inf-id" value="${escapeHtml(inf.id || '')}">
+      <input type="hidden" class="inf-reason" value="${escapeHtml(inf.reason || '')}">
+      <input type="hidden" class="inf-profile-url" value="${escapeHtml(inf.profileUrl || '')}">
+      <div style="flex-basis:100%; display:flex; gap:6px; margin-top:4px;">
+        <input type="text" class="inf-reason-visible" value="${escapeHtml(inf.reason || '')}" placeholder="Why influencer (shown in queue)"
+          style="flex:2; padding:4px 6px; font-size:11px; border:1px dashed #ccc; border-radius:3px; color:#555;">
+        <input type="text" class="inf-profile-url-visible" value="${escapeHtml(inf.profileUrl || '')}" placeholder="https://www.linkedin.com/in/handle/"
+          style="flex:2; padding:4px 6px; font-size:11px; border:1px dashed #ccc; border-radius:3px; color:#555;">
+      </div>
+    `;
+    parentEl.appendChild(row);
+
+    row.querySelector('.inf-del-btn').addEventListener('click', () => {
+      if (confirm(`Delete influencer "${inf.name}"?`)) row.remove();
+    });
+
+    // When tier changes, move the row to the matching tier block on next re-render
+    row.querySelector('.inf-tier').addEventListener('change', () => {
+      const newList = readInfluencerSection();
+      renderInfluencerSection(newList);
+    });
+  }
+
+  function addInfluencerRow(preset) {
+    // Pop a minimal inline form at the top of the influencer section; on save,
+    // push into state and re-render.
+    const name = prompt('Influencer name (e.g. "Jane Doe"):', preset?.name || '');
+    if (!name || !name.trim()) return;
+    const title = prompt('Title / who is he? (e.g. "CTO at Foo")', preset?.title || '') || '';
+    const reason = prompt('Why influencer? (shown on queued posts)', preset?.reason || '') || '';
+    const profileUrl = prompt('LinkedIn profile URL (optional, for scheduled polling)', preset?.profileUrl || '') || '';
+    const tierStr = prompt('Tier (1, 2, or 3):', String(preset?.tier || 2)) || '2';
+    const tier = [1, 2, 3].includes(parseInt(tierStr, 10)) ? parseInt(tierStr, 10) : 2;
+
+    const current = readInfluencerSection();
+    const normalize = window.linkedInAutoApply.feedScoring?.normalizeInfluencer
+      || (raw => ({ ...raw, id: 'inf_' + Math.random().toString(36).slice(2, 10), enabled: true, stats: {} }));
+    current.push(normalize({ name: name.trim(), title: title.trim(), reason: reason.trim(), profileUrl: profileUrl.trim(), tier, enabled: true }));
+    renderInfluencerSection(current);
+  }
+
+  function readInfluencerSection() {
+    const rows = document.querySelectorAll('#inf-tier-container .inf-row');
+    const list = [];
+    rows.forEach(row => {
+      const name = row.querySelector('.inf-name')?.value?.trim() || '';
+      if (!name) return;
+      const id = row.querySelector('.inf-id')?.value || '';
+      const title = row.querySelector('.inf-title')?.value?.trim() || '';
+      // Prefer visible reason/url inputs if present (they are the user-editable ones)
+      const reason = row.querySelector('.inf-reason-visible')?.value?.trim()
+        || row.querySelector('.inf-reason')?.value?.trim() || '';
+      const profileUrl = row.querySelector('.inf-profile-url-visible')?.value?.trim()
+        || row.querySelector('.inf-profile-url')?.value?.trim() || '';
+      const tier = parseInt(row.querySelector('.inf-tier')?.value || '2', 10);
+      const enabled = !!row.querySelector('.inf-enabled')?.checked;
+      // Preserve original stats when possible (look up from the last-loaded list)
+      const originalStats = window.linkedInAutoApply.__lastInfluencerStats?.[id] || {};
+      list.push({ id, name, title, reason, profileUrl, tier, enabled, stats: originalStats });
+    });
+    return list;
+  }
+
   /**
    * Save engagement settings
    */
@@ -1201,8 +1520,17 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     // Save scoring settings
     if (window.linkedInAutoApply.feedScoring) {
       const nichesRaw = document.getElementById('scoring-niches')?.value || '';
-      const influencersRaw = document.getElementById('scoring-influencers')?.value || '';
-      const tier1Raw = document.getElementById('scoring-tier1')?.value || '';
+      // Merge edited rows with the stored list so we preserve stats fields
+      // (seenPostIds, weekStatus, lastSeenAt) that aren't bound to DOM inputs.
+      const stored = await window.linkedInAutoApply.feedScoring.loadSettings();
+      const storedById = new Map((stored.influencerList || []).map(i => [i.id, i]));
+      const editedList = readInfluencerSection().map(edited => {
+        const original = storedById.get(edited.id);
+        const stats = original?.stats || edited.stats || {};
+        const normalize = window.linkedInAutoApply.feedScoring.normalizeInfluencer;
+        return normalize({ ...edited, stats });
+      });
+
       await window.linkedInAutoApply.feedScoring.saveSettings({
         enableScoring: document.getElementById('scoring-enable')?.checked || false,
         claudeApiKey: document.getElementById('scoring-api-key')?.value || '',
@@ -1211,8 +1539,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         thresholdLikeComment: parseInt(document.getElementById('scoring-threshold-lc')?.value || '70', 10),
         thresholdLikeOnly: parseInt(document.getElementById('scoring-threshold-lo')?.value || '40', 10),
         niches: nichesRaw.split(',').map(s => s.trim()).filter(Boolean),
-        influencers: influencersRaw.split(',').map(s => s.trim()).filter(Boolean),
-        tier1Influencers: tier1Raw.split(',').map(s => s.trim()).filter(Boolean),
+        influencerList: editedList,
       });
     }
 
@@ -1367,11 +1694,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     panel.style.cssText = `
       position: fixed; top: 50%; left: 50%;
       transform: translate(-50%, -50%);
-      background: #fff; border-radius: 10px;
+      background: #fff; color: #222; border-radius: 10px;
       box-shadow: 0 8px 32px rgba(0,0,0,0.25);
       z-index: 10002; width: 92vw; max-width: 520px;
       max-height: 80vh; display: flex; flex-direction: column;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      color-scheme: light;
     `;
 
     const actionable = queue.filter(q => q.scoredAction !== 'skip');
@@ -1413,7 +1741,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     const sorted = [...queue].sort((a, b) => (b.scoreResult?.score ?? 0) - (a.scoreResult?.score ?? 0));
 
     for (const item of sorted) {
-      const { post, scoreResult, scoredAction, isTier1 } = item;
+      const { post, scoreResult, scoredAction, isTier1, influencer } = item;
       const score = scoreResult?.score ?? '?';
       const themes = scoreResult?.themes || [];
       const rationale = scoreResult?.rationale || '';
@@ -1450,9 +1778,20 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         border-left: 4px solid ${color};
       `;
 
-      const tier1Badge = isTier1
-        ? '<span style="background:#7c3aed;color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px;font-weight:600;">TIER-1</span>'
-        : '';
+      const tierColors = { 1: '#7c3aed', 2: '#0073b1', 3: '#6c757d' };
+      const tier1Badge = influencer
+        ? `<span style="background:${tierColors[influencer.tier] || '#6c757d'};color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px;font-weight:600;">TIER-${influencer.tier}</span>`
+        : (isTier1
+            ? '<span style="background:#7c3aed;color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;margin-left:6px;font-weight:600;">TIER-1</span>'
+            : '');
+
+      const influencerPill = influencer ? `
+        <div style="margin-top:6px; padding:6px 8px; background:#fff; border:1px dashed ${tierColors[influencer.tier] || '#6c757d'}; border-radius:6px; font-size:12px;">
+          🌟 <strong>${escapeHtml(influencer.name)}</strong>
+          ${influencer.title ? `<span style="color:#555;"> · ${escapeHtml(influencer.title)}</span>` : ''}
+          ${influencer.reason ? `<div style="color:#777; font-size:11px; margin-top:2px; font-style:italic;">${escapeHtml(influencer.reason)}</div>` : ''}
+        </div>
+      ` : '';
 
       card.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:flex-start;">
@@ -1489,6 +1828,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
             AI: "${escapeHtml(truncate(rationale, 120))}"
           </div>
         ` : ''}
+        ${influencerPill}
       `;
 
       body.appendChild(card);
@@ -1496,6 +1836,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
     panel.appendChild(body);
     document.body.appendChild(panel);
+    applyPanelTheme(panel);
   }
 
   // ── Utility Functions ──────────────────────────────────────────────────
