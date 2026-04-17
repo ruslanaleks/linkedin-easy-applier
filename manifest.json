@@ -7,7 +7,9 @@
         "activeTab",
         "scripting",
         "storage",
-        "notifications"
+        "notifications",
+        "alarms",
+        "tabs"
     ],
     "host_permissions": [
         "https://api.anthropic.com/*"
@@ -45,6 +47,7 @@
                 "feed/feedScraper.js",
                 "feed/feedEngagement.js",
                 "feed/feedScoring.js",
+                "feed/feedMonitor.js",
                 "feed/feedAI.js",
                 "feed/feedUI.js",
                 "feed/feedContent.js"
@@ -67,6 +70,7 @@
                 "feed/feedScraper.js",
                 "feed/feedEngagement.js",
                 "feed/feedScoring.js",
+                "feed/feedMonitor.js",
                 "feed/feedAI.js",
                 "feed/feedUI.js",
                 "feed/feedContent.js"

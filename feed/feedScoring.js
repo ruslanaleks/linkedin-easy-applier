@@ -701,6 +701,8 @@ Text: ${sanitize(truncate(post.content || '', CONFIG.MAX_CONTENT_LENGTH))}`;
     updateInfluencerStats,
     getTierSummary,
     getCurrentWeekIso,
+    makeDefaultStats,
+    rolloverWeekIfNeeded,
     loadSettings,
     saveSettings,
     getDefaultSettings,

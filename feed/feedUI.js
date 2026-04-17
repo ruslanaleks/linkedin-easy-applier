@@ -117,7 +117,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     style.textContent = `
       #feed-settings-panel[data-theme="dark"],
       #feed-queue-panel[data-theme="dark"],
-      #feed-analysis-panel[data-theme="dark"] {
+      #feed-analysis-panel[data-theme="dark"],
+      #feed-weekly-report-panel[data-theme="dark"] {
         background: #1b1f23 !important;
         color: #e6e6e6 !important;
         color-scheme: dark !important;
@@ -170,6 +171,27 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         background: #262b30 !important;
         color: #e6e6e6 !important;
       }
+      /* Weekly report dark overrides */
+      #feed-weekly-report-panel[data-theme="dark"] div[style*="background:#f0f4ff"],
+      #feed-weekly-report-panel[data-theme="dark"] div[style*="background:#f0fff4"],
+      #feed-weekly-report-panel[data-theme="dark"] div[style*="background:#fff8e1"],
+      #feed-weekly-report-panel[data-theme="dark"] div[style*="background:#fce4ec"],
+      #feed-weekly-report-panel[data-theme="dark"] div[style*="background:#f8f9fa"] {
+        background: #262b30 !important;
+      }
+      #feed-weekly-report-panel[data-theme="dark"] table tr {
+        border-color: #3a4146 !important;
+      }
+      #feed-weekly-report-panel[data-theme="dark"] div[style*="background:#fff"] {
+        background: #2a3036 !important;
+      }
+      #feed-weekly-report-panel[data-theme="dark"] th,
+      #feed-weekly-report-panel[data-theme="dark"] td,
+      #feed-weekly-report-panel[data-theme="dark"] strong,
+      #feed-weekly-report-panel[data-theme="dark"] span,
+      #feed-weekly-report-panel[data-theme="dark"] div {
+        color: #e6e6e6;
+      }
     `;
     document.head.appendChild(style);
   }
@@ -194,7 +216,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', async () => {
       const uiSettings = await loadUiSettings();
       if (uiSettings.theme !== 'auto') return;
-      ['feed-settings-panel', 'feed-queue-panel', 'feed-analysis-panel'].forEach(id => {
+      ['feed-settings-panel', 'feed-queue-panel', 'feed-analysis-panel', 'feed-weekly-report-panel'].forEach(id => {
         const el = document.getElementById(id);
         if (el) applyPanelTheme(el);
       });
@@ -342,6 +364,102 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
     document.body.appendChild(button);
     return button;
+  }
+
+  /**
+   * Create the "Weekly Report" button
+   */
+  function createWeeklyReportButton() {
+    const existing = document.getElementById('linkedin-feed-report-btn');
+    if (existing) existing.remove();
+
+    const button = document.createElement('button');
+    button.id = 'linkedin-feed-report-btn';
+    button.innerText = 'Weekly Report';
+    button.style.cssText = `${STYLES.button}
+      bottom: 170px; right: 20px;
+      background-color: #e65100; color: #fff;
+    `;
+
+    button.addEventListener('mouseenter', () => {
+      button.style.backgroundColor = '#bf360c';
+      button.style.transform = 'scale(1.05)';
+    });
+    button.addEventListener('mouseleave', () => {
+      button.style.backgroundColor = '#e65100';
+      button.style.transform = 'scale(1)';
+    });
+    button.addEventListener('click', showWeeklyReportPanel);
+
+    document.body.appendChild(button);
+    return button;
+  }
+
+  // ── Badge Indicators ─────────────────────────────────────────────────
+
+  function ensureBadge(button, badgeId, color) {
+    let badge = document.getElementById(badgeId);
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.id = badgeId;
+      badge.style.cssText = `
+        position: absolute; top: -6px; right: -6px;
+        background: ${color}; color: #fff; font-size: 11px; font-weight: 700;
+        min-width: 18px; height: 18px; line-height: 18px; text-align: center;
+        border-radius: 50%; display: none; padding: 0 4px; pointer-events: none;
+      `;
+      // position:fixed already acts as containing block for position:absolute children
+      button.appendChild(badge);
+    }
+    return badge;
+  }
+
+  function setBadgeCount(badge, count) {
+    if (!badge) return;
+    if (count > 0) {
+      badge.textContent = count > 99 ? '99+' : String(count);
+      badge.style.display = 'inline-block';
+    } else {
+      badge.style.display = 'none';
+    }
+  }
+
+  /**
+   * Update badge indicators on all floating buttons based on unseen
+   * influencer posts in monitor state.
+   */
+  async function updateBadges() {
+    try {
+      if (typeof chrome === 'undefined' || !chrome.storage) return;
+      const data = await chrome.storage.local.get('influencerMonitorState');
+      const state = data?.influencerMonitorState || { newPosts: [] };
+      const unseen = (state.newPosts || []).filter(p => !p.seen);
+
+      const tier1Count = unseen.filter(p => p.tier === 1).length;
+      const tier12Count = unseen.filter(p => p.tier <= 2).length;
+      const totalCount = unseen.length;
+
+      // Analyze button: Tier 1 (red)
+      const analyzeBtn = document.getElementById('linkedin-feed-analyze-btn');
+      if (analyzeBtn) {
+        const badge = ensureBadge(analyzeBtn, 'feed-badge-analyze', '#dc3545');
+        setBadgeCount(badge, tier1Count);
+      }
+
+      // Auto Engage button: Tier 1+2 (orange)
+      const engageBtn = document.getElementById('linkedin-feed-engage-btn');
+      if (engageBtn) {
+        const badge = ensureBadge(engageBtn, 'feed-badge-engage', '#e65100');
+        setBadgeCount(badge, tier12Count);
+      }
+
+      // Weekly Report button: total unseen
+      const reportBtn = document.getElementById('linkedin-feed-report-btn');
+      if (reportBtn) {
+        const badge = ensureBadge(reportBtn, 'feed-badge-report', '#dc3545');
+        setBadgeCount(badge, totalCount);
+      }
+    } catch {}
   }
 
   // ── Analysis Functions ─────────────────────────────────────────────────
@@ -1552,7 +1670,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       }
       throw err;
     }
-    alert('✅ Settings saved! AI comments will be generated based on post context.');
+    // Refresh background alarms (influencer list may have changed)
+    try {
+      chrome.runtime.sendMessage({ action: 'refreshInfluencerAlarms' });
+    } catch {}
+
+    alert('Settings saved! AI comments will be generated based on post context.');
     closePanel();
   }
 
@@ -1841,6 +1964,221 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
   // ── Utility Functions ──────────────────────────────────────────────────
 
+  // ── Weekly Report Panel ──────────────────────────────────────────────
+
+  async function showWeeklyReportPanel() {
+    closePanel();
+
+    const _monitor = window.linkedInAutoApply.feedMonitor;
+    if (!_monitor) {
+      console.warn('[FeedUI] feedMonitor module not loaded');
+      return;
+    }
+
+    const report = await _monitor.getWeeklyReport();
+    if (!report) {
+      console.warn('[FeedUI] Could not generate weekly report');
+      return;
+    }
+
+    const panel = document.createElement('div');
+    panel.id = 'feed-weekly-report-panel';
+    panel.style.cssText = STYLES.panel;
+
+    // Header
+    const header = document.createElement('div');
+    header.style.cssText = STYLES.panelHeader;
+    header.innerHTML = `
+      <span style="cursor:grab;" class="drag-handle">Weekly Influencer Report (${escapeHtml(report.currentWeek)})</span>
+      <button id="close-report-panel" style="${STYLES.closeButton}">&times;</button>
+    `;
+    panel.appendChild(header);
+    makeDraggable(panel, header.querySelector('.drag-handle'));
+
+    const body = document.createElement('div');
+    body.style.cssText = STYLES.panelBody;
+
+    // Summary stats row
+    const totalTracked = report.rows.length;
+    const totalSeen = report.rows.reduce((s, r) => s + r.totalPostsSeen, 0);
+    const totalComments = report.rows.reduce((s, r) => s + r.weekCommentCount, 0);
+    const totalUnseen = report.unseenPosts.length;
+
+    body.innerHTML = `
+      <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
+        <div style="flex:1; min-width:100px; background:#f0f4ff; padding:10px; border-radius:6px; text-align:center;">
+          <div style="font-size:22px; font-weight:700; color:#0073b1;">${totalTracked}</div>
+          <div style="font-size:11px; color:#666;">Tracked</div>
+        </div>
+        <div style="flex:1; min-width:100px; background:#f0fff4; padding:10px; border-radius:6px; text-align:center;">
+          <div style="font-size:22px; font-weight:700; color:#2e7d32;">${totalSeen}</div>
+          <div style="font-size:11px; color:#666;">Posts Seen</div>
+        </div>
+        <div style="flex:1; min-width:100px; background:#fff8e1; padding:10px; border-radius:6px; text-align:center;">
+          <div style="font-size:22px; font-weight:700; color:#e65100;">${totalComments}</div>
+          <div style="font-size:11px; color:#666;">Comments</div>
+        </div>
+        <div style="flex:1; min-width:100px; background:#fce4ec; padding:10px; border-radius:6px; text-align:center;">
+          <div style="font-size:22px; font-weight:700; color:#dc3545;">${totalUnseen}</div>
+          <div style="font-size:11px; color:#666;">Unseen</div>
+        </div>
+      </div>
+    `;
+
+    // Last check times
+    const formatCheckTime = (ts) => {
+      if (!ts) return 'never';
+      const diff = Date.now() - ts;
+      if (diff < 60000) return 'just now';
+      if (diff < 3600000) return Math.floor(diff / 60000) + 'm ago';
+      if (diff < 86400000) return Math.floor(diff / 3600000) + 'h ago';
+      return Math.floor(diff / 86400000) + 'd ago';
+    };
+
+    const checkTimesHtml = `
+      <div style="margin-bottom:16px; font-size:12px; color:#666; display:flex; gap:16px; flex-wrap:wrap;">
+        <span>Last checks: T1: <strong>${formatCheckTime(report.lastCheckTimes?.[1])}</strong></span>
+        <span>T2: <strong>${formatCheckTime(report.lastCheckTimes?.[2])}</strong></span>
+        <span>T3: <strong>${formatCheckTime(report.lastCheckTimes?.[3])}</strong></span>
+      </div>
+    `;
+    body.insertAdjacentHTML('beforeend', checkTimesHtml);
+
+    // Per-tier sections
+    const tierMeta = {
+      1: { color: '#7c3aed', label: 'Tier 1', desc: 'every 2h + notification' },
+      2: { color: '#0073b1', label: 'Tier 2', desc: 'every 6h + badge' },
+      3: { color: '#6c757d', label: 'Tier 3', desc: 'every 12h + silent queue' },
+    };
+
+    for (const tier of [1, 2, 3]) {
+      const meta = tierMeta[tier];
+      const tierSum = report.tierSummary?.[tier];
+      const tierRows = report.rows.filter(r => r.tier === tier);
+      if (tierRows.length === 0) continue;
+
+      const target = tierSum?.target || 0;
+      const weekComments = tierSum?.weekComments || 0;
+      const pct = target > 0 ? Math.min(100, Math.round((weekComments / target) * 100)) : 100;
+      const targetMet = target === 0 ? true : weekComments >= target;
+
+      let sectionHtml = `
+        <div style="margin:12px 0; padding:10px; background:#f8f9fa; border-radius:6px; border-left:3px solid ${meta.color};">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+            <div>
+              <strong style="color:${meta.color}; font-size:13px;">${meta.label}</strong>
+              <span style="color:#999; font-size:11px; margin-left:6px;">${meta.desc}</span>
+            </div>
+            <span style="font-size:11px; color:#666;">${weekComments}/${target || 'no target'} comments</span>
+          </div>
+          <div style="background:#e9ecef; border-radius:6px; height:5px; overflow:hidden; margin-bottom:8px;">
+            <div style="background:${targetMet ? '#28a745' : meta.color}; width:${pct}%; height:100%; transition:width .3s;"></div>
+          </div>
+          <table style="width:100%; font-size:12px; border-collapse:collapse;">
+            <tr style="color:#888; text-align:left;">
+              <th style="padding:4px 6px;">Name</th>
+              <th style="padding:4px 6px;">Posts</th>
+              <th style="padding:4px 6px;">Comments</th>
+              <th style="padding:4px 6px;">Status</th>
+              <th style="padding:4px 6px;">Last Seen</th>
+            </tr>
+      `;
+
+      for (const row of tierRows) {
+        const statusColors = { new: '#adb5bd', ok: '#ffc107', commented: '#28a745' };
+        const statusFg = row.weekStatus === 'ok' ? '#333' : '#fff';
+        const lastSeen = formatCheckTime(row.lastSeenAt);
+
+        sectionHtml += `
+          <tr style="border-top:1px solid #e9ecef;">
+            <td style="padding:5px 6px;">
+              <strong>${escapeHtml(row.name)}</strong>
+              ${row.title ? `<div style="color:#888; font-size:11px;">${escapeHtml(truncate(row.title, 40))}</div>` : ''}
+            </td>
+            <td style="padding:5px 6px; text-align:center;">${row.totalPostsSeen}</td>
+            <td style="padding:5px 6px; text-align:center;">${row.weekCommentCount}</td>
+            <td style="padding:5px 6px;">
+              <span style="background:${statusColors[row.weekStatus] || '#adb5bd'}; color:${statusFg};
+                padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600;">${row.weekStatus}</span>
+            </td>
+            <td style="padding:5px 6px; color:#888;">${lastSeen}</td>
+          </tr>
+        `;
+      }
+
+      sectionHtml += '</table></div>';
+      body.insertAdjacentHTML('beforeend', sectionHtml);
+    }
+
+    // New (unseen) posts section
+    if (report.unseenPosts.length > 0) {
+      let unseenHtml = `
+        <div style="margin-top:16px;">
+          <h3 style="margin:0 0 8px 0; font-size:15px; color:#333;">
+            New Influencer Posts (${report.unseenPosts.length})
+          </h3>
+      `;
+
+      for (const p of report.unseenPosts.slice(0, 20)) {
+        const tierColor = tierMeta[p.tier]?.color || '#6c757d';
+        const ago = formatCheckTime(p.foundAt);
+        unseenHtml += `
+          <div style="padding:8px; margin:4px 0; background:#fff; border:1px solid #e9ecef;
+            border-left:3px solid ${tierColor}; border-radius:4px; font-size:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <strong>${escapeHtml(p.influencerName)}</strong>
+              <span style="background:${tierColor}; color:#fff; font-size:10px; padding:1px 6px;
+                border-radius:8px; font-weight:600;">T${p.tier}</span>
+            </div>
+            <div style="color:#555; margin-top:4px;">${escapeHtml(truncate(p.contentSnippet, 120))}</div>
+            <div style="color:#999; font-size:11px; margin-top:2px;">Found ${ago}</div>
+          </div>
+        `;
+      }
+      unseenHtml += '</div>';
+      body.insertAdjacentHTML('beforeend', unseenHtml);
+    }
+
+    // Footer buttons
+    const footer = document.createElement('div');
+    footer.style.cssText = 'padding:10px 16px; border-top:1px solid #e9ecef; display:flex; gap:10px; justify-content:flex-end;';
+
+    const markAllBtn = document.createElement('button');
+    markAllBtn.textContent = 'Mark All Seen';
+    markAllBtn.style.cssText = 'padding:8px 16px; background:#0073b1; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px;';
+    markAllBtn.addEventListener('click', async () => {
+      if (window.linkedInAutoApply.feedMonitor) {
+        await window.linkedInAutoApply.feedMonitor.markAllSeen();
+        markAllBtn.textContent = 'Done!';
+        markAllBtn.disabled = true;
+        setTimeout(() => updateBadges(), 100);
+      }
+    });
+
+    const exportBtn = document.createElement('button');
+    exportBtn.textContent = 'Export Report';
+    exportBtn.style.cssText = 'padding:8px 16px; background:#6c757d; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px;';
+    exportBtn.addEventListener('click', () => {
+      const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `influencer-report-${report.currentWeek}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    footer.appendChild(markAllBtn);
+    footer.appendChild(exportBtn);
+
+    panel.appendChild(body);
+    panel.appendChild(footer);
+    document.body.appendChild(panel);
+    applyPanelTheme(panel);
+
+    document.getElementById('close-report-panel')?.addEventListener('click', () => panel.remove());
+  }
+
   /**
    * Close panel
    */
@@ -1851,6 +2189,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     const settingsPanel = document.getElementById('feed-settings-panel');
     if (settingsPanel) settingsPanel.remove();
     document.getElementById('feed-queue-panel')?.remove();
+    document.getElementById('feed-weekly-report-panel')?.remove();
     analysisPanel = null;
     currentProgressEl = null;
   }
@@ -1910,14 +2249,17 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     createAnalyzeFeedButton,
     createAutoEngageButton,
     createSettingsButton,
+    createWeeklyReportButton,
     startAnalysis,
     toggleAutoEngage,
     showAnalysisResults,
     showSettingsPanel,
     showQueuePanel,
+    showWeeklyReportPanel,
     closePanel,
     updateProgress,
     updateProgressBar,
+    updateBadges,
   };
 
   console.log('[FeedUI] Module loaded successfully');

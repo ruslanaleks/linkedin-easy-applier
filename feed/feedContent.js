@@ -6,6 +6,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 (function () {
   'use strict';
 
+  let badgeInterval = null;
+
   /**
    * Initialize feed module
    */
@@ -31,33 +33,81 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       window.linkedInAutoApply.loadSettings()
         .then(() => {
           console.log('[FeedContent] Settings loaded, creating UI buttons...');
-
-          // Create UI buttons
-          window.linkedInAutoApply.feedUI.createAnalyzeFeedButton();
-          window.linkedInAutoApply.feedUI.createAutoEngageButton();
-          window.linkedInAutoApply.feedUI.createSettingsButton();
-
-          console.log('[FeedContent] Feed analyzer ready. Buttons created:');
-          console.log('  - 📊 Analyze Feed: Scan and analyze posts');
-          console.log('  - ❤️ Auto Engage: Auto-like and interact');
-          console.log('  - ⚙️ Feed Settings: Configure engagement');
+          createAllButtons();
+          postInitSetup();
 
           // Show welcome notification (once per session)
           showWelcomeNotification();
         })
         .catch((err) => {
           console.error('[FeedContent] Failed to load settings:', err);
-          // Create UI anyway with defaults
-          window.linkedInAutoApply.feedUI.createAnalyzeFeedButton();
-          window.linkedInAutoApply.feedUI.createAutoEngageButton();
-          window.linkedInAutoApply.feedUI.createSettingsButton();
+          createAllButtons();
+          postInitSetup();
         });
     } else {
       console.warn('[FeedContent] loadSettings not available, creating UI with defaults...');
-      window.linkedInAutoApply.feedUI.createAnalyzeFeedButton();
-      window.linkedInAutoApply.feedUI.createAutoEngageButton();
-      window.linkedInAutoApply.feedUI.createSettingsButton();
+      createAllButtons();
+      postInitSetup();
     }
+  }
+
+  function createAllButtons() {
+    window.linkedInAutoApply.feedUI.createAnalyzeFeedButton();
+    window.linkedInAutoApply.feedUI.createAutoEngageButton();
+    window.linkedInAutoApply.feedUI.createSettingsButton();
+    window.linkedInAutoApply.feedUI.createWeeklyReportButton();
+
+    console.log('[FeedContent] Feed analyzer ready. Buttons created:');
+    console.log('  - Analyze Feed | Auto Engage | Feed Settings | Weekly Report');
+  }
+
+  /**
+   * Post-init: set up message listener, badge refresh, deferred checks.
+   */
+  function postInitSetup() {
+    // Update badges immediately
+    if (window.linkedInAutoApply.feedUI?.updateBadges) {
+      window.linkedInAutoApply.feedUI.updateBadges();
+    }
+
+    // Periodic badge refresh (every 30s)
+    if (!badgeInterval) {
+      badgeInterval = setInterval(() => {
+        if (window.linkedInAutoApply.feedUI?.updateBadges) {
+          window.linkedInAutoApply.feedUI.updateBadges();
+        }
+      }, 30000);
+    }
+
+    // Process any deferred influencer checks
+    if (window.linkedInAutoApply.feedMonitor?.processPendingChecks) {
+      window.linkedInAutoApply.feedMonitor.processPendingChecks();
+    }
+  }
+
+  // ── Message Listener (background → content script) ──────────────────
+
+  if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
+    chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+      if (message.action === 'influencerScan') {
+        const tier = message.tier;
+        console.log(`[FeedContent] Received influencer scan request for Tier-${tier}`);
+
+        const _monitor = window.linkedInAutoApply.feedMonitor;
+        if (_monitor?.performInfluencerScan) {
+          _monitor.performInfluencerScan(tier).then(result => {
+            sendResponse(result);
+          }).catch(err => {
+            console.warn('[FeedContent] Influencer scan failed:', err.message);
+            sendResponse({ newPosts: [], tier, error: err.message });
+          });
+          return true; // async response
+        } else {
+          console.warn('[FeedContent] feedMonitor not available for scan');
+          sendResponse({ newPosts: [], tier, error: 'feedMonitor not loaded' });
+        }
+      }
+    });
   }
 
   /**
@@ -73,15 +123,10 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
       const data = await chrome.storage.session.get('feedModuleNotified');
       if (!data.feedModuleNotified) {
-        console.log('[FeedContent] 🎉 Feed Module Enhanced!');
-        console.log('  New features:');
-        console.log('  - Rate limiting for safe engagement');
-        console.log('  - Post caching for better performance');
-        console.log('  - Expandable content extraction');
-        console.log('  - Real-time progress tracking');
-        console.log('  - Configurable engagement settings');
-        console.log('  - Anti-detection human-like delays');
-        console.log('  - 115+ smart comments library');
+        console.log('[FeedContent] Feed Module Enhanced!');
+        console.log('  - Rate limiting, caching, progress tracking');
+        console.log('  - Influencer monitoring with tier-based alerts');
+        console.log('  - Weekly engagement report');
 
         await chrome.storage.session.set({ feedModuleNotified: true });
       }
@@ -140,6 +185,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
   function cleanup() {
     console.log('[FeedContent] Cleaning up...');
 
+    // Stop badge refresh
+    if (badgeInterval) {
+      clearInterval(badgeInterval);
+      badgeInterval = null;
+    }
+
     // Stop any ongoing engagement
     if (window.linkedInAutoApply.feedEngagement) {
       window.linkedInAutoApply.feedEngagement.stopEngagement();
@@ -154,6 +205,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     document.getElementById('linkedin-feed-analyze-btn')?.remove();
     document.getElementById('linkedin-feed-engage-btn')?.remove();
     document.getElementById('linkedin-feed-settings-btn')?.remove();
+    document.getElementById('linkedin-feed-report-btn')?.remove();
   }
 
   // Initialize
