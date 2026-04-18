@@ -145,8 +145,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // Send notification
     chrome.notifications.create({
-      type: "basic",
-      iconUrl: "icon48.png",
+      type: 'basic',
+      iconUrl: 'icon48.png',
       title: "LinkedIn Auto Apply",
       message: `Application sent successfully! Total applications: ${stats.totalApplied}`,
       priority: 2,
@@ -171,8 +171,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Log feed analysis summary
     console.log("Feed analysis complete:", message.summary);
     chrome.notifications.create({
-      type: "basic",
-      iconUrl: "icon48.png",
+      type: 'basic',
+      iconUrl: 'icon48.png',
       title: "LinkedIn Feed Analysis",
       message: `Scanned ${message.summary.totalPosts} posts. Found ${message.summary.hiringPostsCount} hiring posts, ${message.summary.keywordMatchCount} keyword matches.`,
       priority: 1,
@@ -181,8 +181,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.action === "feedEngagementComplete") {
     console.log("Feed engagement complete:", message.stats);
     chrome.notifications.create({
-      type: "basic",
-      iconUrl: "icon48.png",
+      type: 'basic',
+      iconUrl: 'icon48.png',
       title: "LinkedIn Feed Engagement",
       message: `Liked ${message.stats.liked} posts, skipped ${message.stats.skipped}.`,
       priority: 1,

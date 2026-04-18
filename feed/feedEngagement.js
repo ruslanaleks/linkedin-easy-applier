@@ -3545,14 +3545,25 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
             if (matched.length > 0) { shouldEngage = true; engageReason = `day keywords (${matched.join(', ')})`; }
           }
 
-          // Legacy path: still honor influencerList so Tier-1 forces like+comment+follow
+          // Legacy path: honor influencerList tier-based commenting rules
           const matched = _scoring?.matchInfluencer
             ? _scoring.matchInfluencer(post.author, _scoringSettings?.influencerList || [])
             : null;
           let legacyAction = shouldEngage ? 'like_only' : 'skip';
           if (matched && matched.tier === 1) {
+            // Tier 1: ALWAYS comment on every post
             legacyAction = 'like_comment_follow';
-            if (!shouldEngage) engageReason = 'tier-1 influencer';
+            if (!shouldEngage) engageReason = 'tier-1 influencer (every post)';
+          } else if (matched && matched.tier === 2) {
+            // Tier 2: comment 2-3 times per week, then fall back to normal scoring
+            const weekTarget = _scoring?.getConfig?.()?.TIER_WEEKLY_COMMENT_TARGET?.[2] || 3;
+            const weekCount = matched.stats?.weekCommentCount || 0;
+            if (weekCount < weekTarget) {
+              legacyAction = 'like_comment_follow';
+              if (!shouldEngage) engageReason = `tier-2 influencer (${weekCount}/${weekTarget} weekly)`;
+            } else if (!shouldEngage) {
+              engageReason = `tier-2 influencer (weekly target met)`;
+            }
           }
 
           scoredQueue.push({

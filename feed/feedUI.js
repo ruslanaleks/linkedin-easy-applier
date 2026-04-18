@@ -2000,28 +2000,46 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
     // Summary stats row
     const totalTracked = report.rows.length;
-    const totalSeen = report.rows.reduce((s, r) => s + r.totalPostsSeen, 0);
+    const totalWeekPosts = report.rows.reduce((s, r) => s + (r.weekPostsSeen || 0), 0);
     const totalComments = report.rows.reduce((s, r) => s + r.weekCommentCount, 0);
     const totalUnseen = report.unseenPosts.length;
 
+    // Overall progress: combine all tier targets
+    const overallTarget = report.rows.reduce((s, r) => s + (r.target || 0), 0);
+    const overallPct = overallTarget > 0
+      ? Math.min(100, Math.round((totalComments / overallTarget) * 100))
+      : (totalComments > 0 ? 100 : 0);
+
     body.innerHTML = `
       <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px;">
-        <div style="flex:1; min-width:100px; background:#f0f4ff; padding:10px; border-radius:6px; text-align:center;">
+        <div style="flex:1; min-width:80px; background:#f0f4ff; padding:10px; border-radius:6px; text-align:center;">
           <div style="font-size:22px; font-weight:700; color:#0073b1;">${totalTracked}</div>
           <div style="font-size:11px; color:#666;">Tracked</div>
         </div>
-        <div style="flex:1; min-width:100px; background:#f0fff4; padding:10px; border-radius:6px; text-align:center;">
-          <div style="font-size:22px; font-weight:700; color:#2e7d32;">${totalSeen}</div>
-          <div style="font-size:11px; color:#666;">Posts Seen</div>
+        <div style="flex:1; min-width:80px; background:#f0fff4; padding:10px; border-radius:6px; text-align:center;">
+          <div style="font-size:22px; font-weight:700; color:#2e7d32;">${totalWeekPosts}</div>
+          <div style="font-size:11px; color:#666;">Posts This Week</div>
         </div>
-        <div style="flex:1; min-width:100px; background:#fff8e1; padding:10px; border-radius:6px; text-align:center;">
+        <div style="flex:1; min-width:80px; background:#fff8e1; padding:10px; border-radius:6px; text-align:center;">
           <div style="font-size:22px; font-weight:700; color:#e65100;">${totalComments}</div>
           <div style="font-size:11px; color:#666;">Comments</div>
         </div>
-        <div style="flex:1; min-width:100px; background:#fce4ec; padding:10px; border-radius:6px; text-align:center;">
+        <div style="flex:1; min-width:80px; background:#fce4ec; padding:10px; border-radius:6px; text-align:center;">
           <div style="font-size:22px; font-weight:700; color:#dc3545;">${totalUnseen}</div>
           <div style="font-size:11px; color:#666;">Unseen</div>
         </div>
+      </div>
+
+      <div style="margin-bottom:16px; padding:12px; background:#f8f9fa; border-radius:8px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+          <strong style="font-size:13px; color:#333;">Overall Weekly Progress</strong>
+          <span style="font-size:13px; font-weight:700; color:${overallPct >= 100 ? '#28a745' : '#e65100'};">${overallPct}%</span>
+        </div>
+        <div style="background:#e9ecef; border-radius:8px; height:10px; overflow:hidden;">
+          <div style="background:${overallPct >= 100 ? '#28a745' : overallPct >= 50 ? '#ffc107' : '#dc3545'};
+            width:${overallPct}%; height:100%; transition:width .3s; border-radius:8px;"></div>
+        </div>
+        <div style="font-size:11px; color:#888; margin-top:4px;">${totalComments} / ${overallTarget} comments completed</div>
       </div>
     `;
 
@@ -2044,11 +2062,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     `;
     body.insertAdjacentHTML('beforeend', checkTimesHtml);
 
-    // Per-tier sections
+    // Per-tier sections with tier-specific descriptions
     const tierMeta = {
-      1: { color: '#7c3aed', label: 'Tier 1', desc: 'every 2h + notification' },
-      2: { color: '#0073b1', label: 'Tier 2', desc: 'every 6h + badge' },
-      3: { color: '#6c757d', label: 'Tier 3', desc: 'every 12h + silent queue' },
+      1: { color: '#7c3aed', label: 'Tier 1', desc: 'Comment on every post', rule: 'REQUIRED' },
+      2: { color: '#0073b1', label: 'Tier 2', desc: '2-3 comments per week', rule: 'WEEKLY' },
+      3: { color: '#6c757d', label: 'Tier 3', desc: 'Optional commenting', rule: 'OPTIONAL' },
     };
 
     for (const tier of [1, 2, 3]) {
@@ -2057,51 +2075,112 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       const tierRows = report.rows.filter(r => r.tier === tier);
       if (tierRows.length === 0) continue;
 
-      const target = tierSum?.target || 0;
-      const weekComments = tierSum?.weekComments || 0;
-      const pct = target > 0 ? Math.min(100, Math.round((weekComments / target) * 100)) : 100;
-      const targetMet = target === 0 ? true : weekComments >= target;
+      const tierPct = tierSum?.pct || 0;
+      const tierTarget = tierSum?.effectiveTarget || 0;
+      const tierComments = tierSum?.weekCommentsMade || 0;
+      const tierMet = tierSum?.targetMet || false;
+
+      // Tier-specific progress label
+      let progressLabel;
+      if (tier === 1) {
+        const weekPosts = tierSum?.weekPostsSeen || 0;
+        progressLabel = `${tierComments}/${weekPosts} posts commented`;
+      } else if (tier === 2) {
+        progressLabel = `${tierComments}/${tierTarget} weekly comments`;
+      } else {
+        progressLabel = `${tierComments} comments (optional)`;
+      }
+
+      // Progress bar color
+      let barColor;
+      if (tier === 3) {
+        barColor = '#6c757d';
+      } else if (tierMet) {
+        barColor = '#28a745';
+      } else if (tierPct >= 50) {
+        barColor = '#ffc107';
+      } else {
+        barColor = '#dc3545';
+      }
 
       let sectionHtml = `
-        <div style="margin:12px 0; padding:10px; background:#f8f9fa; border-radius:6px; border-left:3px solid ${meta.color};">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <div style="margin:12px 0; padding:12px; background:#f8f9fa; border-radius:8px; border-left:4px solid ${meta.color};">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
             <div>
-              <strong style="color:${meta.color}; font-size:13px;">${meta.label}</strong>
-              <span style="color:#999; font-size:11px; margin-left:6px;">${meta.desc}</span>
+              <strong style="color:${meta.color}; font-size:14px;">${meta.label}</strong>
+              <span style="background:${meta.color}20; color:${meta.color}; font-size:10px; padding:2px 8px;
+                border-radius:10px; margin-left:8px; font-weight:600;">${meta.rule}</span>
             </div>
-            <span style="font-size:11px; color:#666;">${weekComments}/${target || 'no target'} comments</span>
+            <span style="font-size:13px; font-weight:700; color:${tierMet ? '#28a745' : (tier === 3 ? '#6c757d' : '#e65100')};">
+              ${tier === 3 ? (tierComments > 0 ? tierComments + ' done' : '--') : tierPct + '%'}
+            </span>
           </div>
-          <div style="background:#e9ecef; border-radius:6px; height:5px; overflow:hidden; margin-bottom:8px;">
-            <div style="background:${targetMet ? '#28a745' : meta.color}; width:${pct}%; height:100%; transition:width .3s;"></div>
+          <div style="color:#888; font-size:11px; margin-bottom:8px;">${meta.desc}</div>
+          <div style="background:#e9ecef; border-radius:8px; height:8px; overflow:hidden; margin-bottom:4px;">
+            <div style="background:${barColor}; width:${tier === 3 ? (tierComments > 0 ? 100 : 0) : tierPct}%;
+              height:100%; transition:width .3s; border-radius:8px;"></div>
           </div>
+          <div style="font-size:11px; color:#888; margin-bottom:10px;">${progressLabel}</div>
+
           <table style="width:100%; font-size:12px; border-collapse:collapse;">
-            <tr style="color:#888; text-align:left;">
-              <th style="padding:4px 6px;">Name</th>
-              <th style="padding:4px 6px;">Posts</th>
-              <th style="padding:4px 6px;">Comments</th>
-              <th style="padding:4px 6px;">Status</th>
-              <th style="padding:4px 6px;">Last Seen</th>
+            <tr style="color:#888; text-align:left; border-bottom:1px solid #dee2e6;">
+              <th style="padding:6px;">Name</th>
+              <th style="padding:6px; text-align:center;">Week Posts</th>
+              <th style="padding:6px; text-align:center;">Comments</th>
+              <th style="padding:6px;">Progress</th>
+              <th style="padding:6px;">Last Seen</th>
             </tr>
       `;
 
       for (const row of tierRows) {
-        const statusColors = { new: '#adb5bd', ok: '#ffc107', commented: '#28a745' };
-        const statusFg = row.weekStatus === 'ok' ? '#333' : '#fff';
         const lastSeen = formatCheckTime(row.lastSeenAt);
+        const rowPct = row.pct || 0;
+        const rowTarget = row.target || 0;
+        const rowMet = tier === 3 ? true : rowPct >= 100;
+
+        // Per-influencer progress label
+        let rowProgressLabel;
+        if (tier === 1) {
+          rowProgressLabel = `${row.weekCommentCount}/${row.weekPostsSeen || 0}`;
+        } else if (tier === 2) {
+          rowProgressLabel = `${row.weekCommentCount}/${rowTarget}`;
+        } else {
+          rowProgressLabel = row.weekCommentCount > 0 ? String(row.weekCommentCount) : '--';
+        }
+
+        // Per-influencer bar color
+        let rowBarColor;
+        if (tier === 3) {
+          rowBarColor = '#6c757d';
+        } else if (rowMet) {
+          rowBarColor = '#28a745';
+        } else if (rowPct >= 50) {
+          rowBarColor = '#ffc107';
+        } else {
+          rowBarColor = '#dc3545';
+        }
 
         sectionHtml += `
           <tr style="border-top:1px solid #e9ecef;">
-            <td style="padding:5px 6px;">
+            <td style="padding:6px;">
               <strong>${escapeHtml(row.name)}</strong>
               ${row.title ? `<div style="color:#888; font-size:11px;">${escapeHtml(truncate(row.title, 40))}</div>` : ''}
             </td>
-            <td style="padding:5px 6px; text-align:center;">${row.totalPostsSeen}</td>
-            <td style="padding:5px 6px; text-align:center;">${row.weekCommentCount}</td>
-            <td style="padding:5px 6px;">
-              <span style="background:${statusColors[row.weekStatus] || '#adb5bd'}; color:${statusFg};
-                padding:2px 8px; border-radius:10px; font-size:10px; font-weight:600;">${row.weekStatus}</span>
+            <td style="padding:6px; text-align:center;">${row.weekPostsSeen || 0}</td>
+            <td style="padding:6px; text-align:center; font-weight:600;">${row.weekCommentCount}</td>
+            <td style="padding:6px; min-width:100px;">
+              <div style="display:flex; align-items:center; gap:6px;">
+                <div style="flex:1; background:#e9ecef; border-radius:6px; height:6px; overflow:hidden;">
+                  <div style="background:${rowBarColor}; width:${tier === 3 ? (row.weekCommentCount > 0 ? 100 : 0) : rowPct}%;
+                    height:100%; border-radius:6px;"></div>
+                </div>
+                <span style="font-size:10px; font-weight:600; color:${rowMet ? '#28a745' : '#888'}; min-width:32px;">
+                  ${tier === 3 ? (row.weekCommentCount > 0 ? 'done' : '--') : rowPct + '%'}
+                </span>
+              </div>
+              <div style="font-size:10px; color:#aaa; margin-top:2px;">${rowProgressLabel}</div>
             </td>
-            <td style="padding:5px 6px; color:#888;">${lastSeen}</td>
+            <td style="padding:6px; color:#888; font-size:11px;">${lastSeen}</td>
           </tr>
         `;
       }

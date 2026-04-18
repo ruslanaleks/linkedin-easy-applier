@@ -245,6 +245,9 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
     const tierSummary = _scoring.getTierSummary(settings);
 
+    const config = _scoring.getConfig();
+    const tierTargets = config.TIER_WEEKLY_COMMENT_TARGET || { 1: -1, 2: 3, 3: 0 };
+
     // Per-influencer rows
     const rows = list.map(inf => {
       const stats = inf.stats || _scoring.makeDefaultStats();
@@ -260,12 +263,35 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         return week === currentWeek;
       });
 
+      const weekCommentCount = stats.weekCommentCount || 0;
+      const weekPostsSeen = stats.weekPostsSeen || 0;
+      const tierTarget = tierTargets[inf.tier];
+
+      // Compute per-influencer target and percentage
+      let target, pct;
+      if (tierTarget === -1) {
+        // Tier 1: every post
+        target = weekPostsSeen;
+        pct = target > 0 ? Math.min(100, Math.round((weekCommentCount / target) * 100)) : (weekCommentCount > 0 ? 100 : 0);
+      } else if (tierTarget > 0) {
+        // Tier 2: fixed weekly target
+        target = tierTarget;
+        pct = Math.min(100, Math.round((weekCommentCount / target) * 100));
+      } else {
+        // Tier 3: optional
+        target = 0;
+        pct = weekCommentCount > 0 ? 100 : 0;
+      }
+
       return {
         id: inf.id,
         name: inf.name,
         title: inf.title || '',
         tier: inf.tier,
-        weekCommentCount: stats.weekCommentCount || 0,
+        weekCommentCount,
+        weekPostsSeen,
+        target,
+        pct,
         weekStatus: stats.weekStatus || 'new',
         totalPostsSeen: stats.totalPostsSeen || 0,
         lastSeenAt: stats.lastSeenAt || 0,
@@ -307,6 +333,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       if (stats.weekIso === currentWeek) {
         influencerStats[inf.id] = {
           postsSeen: stats.totalPostsSeen || 0,
+          weekPostsSeen: stats.weekPostsSeen || 0,
           commentsMade: stats.weekCommentCount || 0,
         };
       }

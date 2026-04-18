@@ -472,12 +472,17 @@ ${imageUrl}
    */
   async function analyzeImage(imageUrl, settings) {
     try {
-      // Skip URLs that the LLM API can't download (LinkedIn CDN temporary/signed URLs,
-      // data: URIs, blob: URIs, and relative paths)
+      // Almost ALL images scraped from LinkedIn are served from CDN domains
+      // (*.licdn.com, dms.licdn.com, media-exp*.licdn.com) using temporary
+      // signed URLs that external LLM APIs cannot download.  Block anything
+      // that looks LinkedIn-related or otherwise un-fetchable by the API.
       if (!imageUrl || !imageUrl.startsWith('http') ||
           /\bexpires=\d+\b/i.test(imageUrl) ||
-          /media\.licdn\.com/i.test(imageUrl) ||
-          /licdn\.com/i.test(imageUrl)) {
+          /licdn/i.test(imageUrl) ||
+          /linkedin/i.test(imageUrl) ||
+          /media-exp/i.test(imageUrl) ||
+          /dms\./i.test(imageUrl) ||
+          /\.gif(\?|$)/i.test(imageUrl)) {
         console.log('[FeedAI] Skipping image analysis: URL likely un-downloadable by API');
         return null;
       }
@@ -551,9 +556,10 @@ ${imageUrl}
         return null;
       }
 
-      // Analyze image if present and enabled (wrapped in try/catch because
-      // LinkedIn image URLs are often temporary/CORS-blocked and the API may
-      // reject them with "Unable to download all specified images")
+      // Analyze image if present and enabled.
+      // LinkedIn image URLs are almost always temporary/signed CDN URLs that
+      // external LLM APIs cannot fetch, so skip image analysis entirely to
+      // avoid "Unable to download all specified images" API errors.
       if (postContext.hasMedia && postContext.mediaType === 'image' &&
           post.media?.images?.[0] && options.analyzeImage !== false) {
         try {
@@ -562,6 +568,7 @@ ${imageUrl}
             postContext.mediaDescription = truncate(imageDesc, CONFIG.MAX_IMAGE_DESCRIPTION);
           }
         } catch (imgErr) {
+          // Swallow — image analysis is best-effort, never block comment generation
           console.warn('[FeedAI] Image analysis failed, continuing without it:', imgErr.message);
         }
       }

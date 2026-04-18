@@ -33,8 +33,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     CACHE_TTL_MS: 10 * 60 * 1000,
     MAX_CACHE_SIZE: 200,
 
-    // Influencer tier targets (comments/week the bot tries to achieve per influencer)
-    TIER_WEEKLY_COMMENT_TARGET: { 1: 2, 2: 1, 3: 0 },
+    // Influencer tier targets (comments/week per influencer)
+    // -1 = every post must be commented on (Tier 1)
+    //  3 = 2-3 comments per week (Tier 2)
+    //  0 = optional (Tier 3)
+    TIER_WEEKLY_COMMENT_TARGET: { 1: -1, 2: 3, 3: 0 },
     // Score boost applied on top of AI score when the author matches an influencer.
     // Tier 1 is also force-promoted to like_comment_follow regardless of numeric score.
     TIER_SCORE_BOOST: { 1: 0, 2: 15, 3: 8 },
@@ -93,6 +96,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       lastCheckedAt: 0,
       weekIso: getCurrentWeekIso(),
       weekCommentCount: 0,
+      weekPostsSeen: 0,        // posts seen THIS week (resets at week boundary)
       weekStatus: 'new',       // 'new' | 'ok' | 'commented'
       totalPostsSeen: 0,
       seenPostIds: [],
@@ -502,7 +506,16 @@ Text: ${sanitize(truncate(post.content || '', CONFIG.MAX_CONTENT_LENGTH))}`;
 
       let scoredAction;
       if (matched && matched.tier === 1) {
-        scoredAction = 'like_comment_follow'; // Tier-1: ALWAYS like + comment + follow
+        scoredAction = 'like_comment_follow'; // Tier-1: ALWAYS comment on every post
+      } else if (matched && matched.tier === 2) {
+        // Tier-2: force like_comment_follow until 2-3 comments/week target met
+        const weekTarget = CONFIG.TIER_WEEKLY_COMMENT_TARGET[2] || 3;
+        const weekCount = matched.stats?.weekCommentCount || 0;
+        if (weekCount < weekTarget) {
+          scoredAction = 'like_comment_follow';
+        } else {
+          scoredAction = getAction(boostedScoreResult, settings);
+        }
       } else {
         scoredAction = getAction(boostedScoreResult, settings);
       }
@@ -586,6 +599,7 @@ Text: ${sanitize(truncate(post.content || '', CONFIG.MAX_CONTENT_LENGTH))}`;
       stats.weekIso = currentWeek;
       stats.weekStatus = 'new';
       stats.weekCommentCount = 0;
+      stats.weekPostsSeen = 0;
     }
     return stats;
   }
@@ -624,6 +638,7 @@ Text: ${sanitize(truncate(post.content || '', CONFIG.MAX_CONTENT_LENGTH))}`;
       // within the same week so a later 'seen' doesn't downgrade 'commented'.
       if (event === 'seen') {
         stats.totalPostsSeen = (stats.totalPostsSeen || 0) + 1;
+        stats.weekPostsSeen = (stats.weekPostsSeen || 0) + 1;
         if (stats.weekStatus === 'new') stats.weekStatus = 'new'; // no-op — 'seen' doesn't imply ok yet
       } else if (event === 'ok') {
         if (stats.weekStatus === 'new') stats.weekStatus = 'ok';
@@ -652,27 +667,50 @@ Text: ${sanitize(truncate(post.content || '', CONFIG.MAX_CONTENT_LENGTH))}`;
 
     for (const tier of [1, 2, 3]) {
       const tierInfs = list.filter(i => i.tier === tier);
-      let weekComments = 0;
+      let weekCommentsMade = 0;   // total comments made across all influencers this week
+      let weekPostsSeenTotal = 0; // total posts seen across all influencers this week
       let weekOks = 0;
       let weekNews = 0;
+      let weekCommented = 0;      // influencers with at least one comment
       for (const inf of tierInfs) {
         const s = inf.stats || makeDefaultStats();
+        rolloverWeekIfNeeded(s);
         const status = s.weekIso === currentWeek ? s.weekStatus : 'new';
-        if (status === 'commented') weekComments++;
+        weekCommentsMade += (s.weekCommentCount || 0);
+        weekPostsSeenTotal += (s.weekPostsSeen || 0);
+        if (status === 'commented') weekCommented++;
         else if (status === 'ok') weekOks++;
         else weekNews++;
       }
-      const target = CONFIG.TIER_WEEKLY_COMMENT_TARGET[tier] || 0;
+      const configTarget = CONFIG.TIER_WEEKLY_COMMENT_TARGET[tier];
+      // Tier 1 (-1): target = every post seen this week
+      // Tier 2 (3): fixed 2-3 comments/week per influencer → total = 3 * count
+      // Tier 3 (0): optional
+      let effectiveTarget;
+      if (configTarget === -1) {
+        effectiveTarget = weekPostsSeenTotal; // every post
+      } else {
+        effectiveTarget = configTarget * tierInfs.length;
+      }
       const totalPosts = tierInfs.reduce((sum, i) => sum + (i.stats?.totalPostsSeen || 0), 0);
+      const pct = effectiveTarget > 0
+        ? Math.min(100, Math.round((weekCommentsMade / effectiveTarget) * 100))
+        : (weekCommentsMade > 0 ? 100 : 0);
       summary[tier] = {
         tier,
         count: tierInfs.length,
-        target,
-        weekComments,
+        configTarget,             // raw config: -1, 3, or 0
+        effectiveTarget,          // computed: dynamic for T1, fixed for T2, 0 for T3
+        weekCommentsMade,         // total comments made this week
+        weekPostsSeen: weekPostsSeenTotal,
+        weekCommented,            // influencers with ≥1 comment
         weekOks,
         weekNews,
         totalPostsSeen: totalPosts,
-        targetMet: target === 0 ? true : weekComments >= target,
+        pct,
+        targetMet: configTarget === 0 ? true
+          : configTarget === -1 ? weekCommentsMade >= weekPostsSeenTotal
+          : weekCommentsMade >= effectiveTarget,
       };
     }
     return summary;
