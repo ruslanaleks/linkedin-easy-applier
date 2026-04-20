@@ -370,8 +370,17 @@ async function visitSingleProfile(url, influencer) {
     }, MAX_VISIT_MS);
 
     try {
-      // Create tab (not active, in background)
-      const tab = await chrome.tabs.create({ url, active: false });
+      // Remember the currently active tab so we can restore focus later
+      let originalTabId = null;
+      try {
+        const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (activeTab) originalTabId = activeTab.id;
+      } catch {}
+
+      // Create tab as ACTIVE — LinkedIn's React editor and event handlers
+      // require a foreground tab to process clicks and input events properly.
+      // Background tabs are throttled by Chrome and synthetic events don't work.
+      const tab = await chrome.tabs.create({ url, active: true });
       tabId = tab.id;
 
       // If user closes the tab manually, resolve with partial result
@@ -383,6 +392,16 @@ async function visitSingleProfile(url, influencer) {
         }
       };
       chrome.tabs.onRemoved.addListener(onTabRemoved);
+
+      // Wrap the original resolve to restore the user's tab after visit completes
+      const originalResolve = _profileVisitResolve;
+      _profileVisitResolve = (result) => {
+        // Restore focus to the user's original tab
+        if (originalTabId) {
+          chrome.tabs.update(originalTabId, { active: true }).catch(() => {});
+        }
+        originalResolve(result);
+      };
 
       // Wait for tab to finish loading
       await new Promise((res) => {

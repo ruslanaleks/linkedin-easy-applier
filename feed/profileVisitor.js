@@ -207,31 +207,62 @@
   }
 
   function findLikeButton(postEl) {
-    // "no reaction" button = not yet liked
+    // Strategy 1: "no reaction" button = not yet liked
     const noReaction = postEl.querySelector(
       'button[aria-label*="no reaction" i], [role="button"][aria-label*="no reaction" i]'
     );
     if (noReaction) return noReaction;
 
+    // Strategy 2: Button with like/react in aria-label
     const btns = postEl.querySelectorAll('button, [role="button"]');
     for (const b of btns) {
       const label = (b.getAttribute('aria-label') || '').toLowerCase();
       const pressed = b.getAttribute('aria-pressed');
       if ((label.includes('like') || label.includes('react') || label.includes('me gusta') || label.includes('нравится')) &&
-          !label.includes('liked') && !label.includes('unlike') &&
+          !label.includes('liked') && !label.includes('unlike') && !label.includes('already') &&
           pressed !== 'true') {
         return b;
       }
     }
+
+    // Strategy 3: First button in social actions bar
+    const actionBarSelectors = [
+      '[class*="social-actions"]',
+      '[class*="feed-shared-social-action"]',
+      '[class*="social-action"]',
+      '[data-testid*="social-action"]',
+    ];
+    for (const sel of actionBarSelectors) {
+      const actionBar = postEl.querySelector(sel);
+      if (actionBar) {
+        const firstBtn = actionBar.querySelector('button, [role="button"]');
+        if (firstBtn) {
+          const label = (firstBtn.getAttribute('aria-label') || '').toLowerCase();
+          const pressed = firstBtn.getAttribute('aria-pressed');
+          if (pressed !== 'true' && !label.includes('liked') && !label.includes('unlike')) {
+            return firstBtn;
+          }
+        }
+        break;
+      }
+    }
+
     return null;
   }
 
   async function likePost(postEl) {
     if (isAlreadyLiked(postEl)) return false;
     const btn = findLikeButton(postEl);
-    if (!btn) return false;
+    if (!btn) { LOG('Like button not found'); return false; }
     btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
     await delay(randomDelay(300, 600));
+    // Full event sequence — simple .click() is unreliable
+    btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    await delay(50);
+    btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
+    btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     btn.click();
     LOG('Liked post');
     return true;
@@ -240,21 +271,52 @@
   // ── Comment on a post ───────────────────────────────────────────────────
 
   function findCommentButton(postEl) {
+    const commentPatterns = ['comment', 'comentar', 'comentario', 'комментир', 'комментарий', 'комментировать'];
+    const countPattern = /^\d+\s+(comment|comentario|комментари)/i;
+    const likePatterns = ['like', 'react', 'me gusta', 'нравится', 'no reaction'];
+
+    // Strategy 1: Button with comment-related aria-label or text
     const btns = postEl.querySelectorAll('button, [role="button"]');
     for (const b of btns) {
       const label = (b.getAttribute('aria-label') || '').toLowerCase();
-      const text = (b.textContent || '').toLowerCase().trim();
-      if (label.includes('comment') || label.includes('comentar') || label.includes('комментир') ||
-          text === 'comment' || text === 'comentar' || text === 'комментировать') {
-        return b;
+      const text = (b.textContent || '').trim().toLowerCase();
+      const match = commentPatterns.some(p => label.includes(p) || text.includes(p));
+      if (match && !countPattern.test(text)) return b;
+    }
+
+    // Strategy 2: Positional — Comment is 2nd in social actions bar (Like, Comment, Repost, Send)
+    const actionBarSelectors = [
+      '[class*="social-actions"]',
+      '[class*="feed-shared-social-action"]',
+      '[class*="social-action"]',
+      '[data-testid*="social-action"]',
+    ];
+    for (const sel of actionBarSelectors) {
+      const actionBar = postEl.querySelector(sel);
+      if (!actionBar) continue;
+      const barItems = actionBar.querySelectorAll(':scope > *');
+      const barBtns = barItems.length >= 3 ? barItems : actionBar.querySelectorAll('button, [role="button"]');
+      // Find Like button, Comment is the next one
+      for (let i = 0; i < barBtns.length; i++) {
+        const el = barBtns[i];
+        const target = el.matches?.('button, [role="button"]') ? el : el.querySelector('button, [role="button"]') || el;
+        const label = (target.getAttribute('aria-label') || '').toLowerCase();
+        const text = (target.textContent || '').toLowerCase();
+        if (likePatterns.some(p => label.includes(p) || text.includes(p))) {
+          const nextItem = barBtns[i + 1];
+          if (nextItem) {
+            return nextItem.matches?.('button, [role="button"]') ? nextItem : nextItem.querySelector('button, [role="button"]') || nextItem;
+          }
+        }
       }
+      // Fallback: 2nd item if at least 3 items
+      if (barItems.length >= 3) {
+        const second = barItems[1];
+        return second.querySelector('button, [role="button"]') || second;
+      }
+      break;
     }
-    // Fallback: second action button in social bar
-    const actionBar = postEl.querySelector('[class*="social-actions"], [data-testid*="social-action"]');
-    if (actionBar) {
-      const actionBtns = actionBar.querySelectorAll('button, [role="button"]');
-      if (actionBtns.length >= 2) return actionBtns[1];
-    }
+
     return null;
   }
 
@@ -439,6 +501,7 @@
       if (submitBtn) {
         const isDisabled = submitBtn.disabled || submitBtn.hasAttribute('disabled');
         const isAriaDisabled = submitBtn.getAttribute('aria-disabled') === 'true';
+        LOG(`Submit btn attempt ${attempt + 1}: found "${(submitBtn.textContent || '').trim()}" disabled=${isDisabled} aria-disabled=${isAriaDisabled}`);
         if (!isDisabled && !isAriaDisabled) {
           submitReady = true;
           break;
@@ -452,13 +515,38 @@
         await delay(100);
         input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: commentText }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
+        input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: commentText }));
+      } else {
+        LOG(`Submit btn attempt ${attempt + 1}: not found`);
       }
       await delay(600);
     }
 
-    if (!submitReady) { WARN('No submit button found'); return false; }
+    if (!submitReady) {
+      // Fallback: press Enter in the comment input — LinkedIn submits on Enter
+      LOG('Submit button not ready, trying Enter key fallback...');
+      input.focus();
+      await delay(200);
+      const enterDown = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
+      const enterPress = new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
+      const enterUp = new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
+      input.dispatchEvent(enterDown);
+      input.dispatchEvent(enterPress);
+      input.dispatchEvent(enterUp);
+      await delay(randomDelay(1500, 2500));
+
+      // Check if comment was submitted (input should be cleared or removed)
+      const inputStillHasText = (input.textContent || input.innerText || '').trim().length > 0;
+      if (inputStillHasText) {
+        WARN('Enter key fallback did not submit either');
+        return false;
+      }
+      LOG('Comment posted via Enter key');
+      return true;
+    }
 
     // 5. Click submit with full pointer + mouse event sequence
+    LOG('Clicking submit button...');
     submitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
     await delay(200);
     submitBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
