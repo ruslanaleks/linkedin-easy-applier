@@ -490,13 +490,15 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
    * @returns {Promise<Object>} results summary
    */
   async function visitInfluencerProfiles() {
+    // Background responds with an immediate ack (started: true).
+    // Actual results arrive later via 'profileVisitsComplete' broadcast.
     return new Promise((resolve, reject) => {
       try {
         chrome.runtime.sendMessage({ action: 'startProfileVisits' }, (resp) => {
           if (chrome.runtime.lastError) {
             reject(new Error(chrome.runtime.lastError.message));
           } else if (resp?.success) {
-            resolve(resp.results);
+            resolve({ started: true });
           } else {
             reject(new Error(resp?.error || 'Unknown error'));
           }

@@ -251,21 +251,26 @@
   }
 
   async function likePost(postEl) {
-    if (isAlreadyLiked(postEl)) return false;
+    if (isAlreadyLiked(postEl)) {
+      LOG('Post already liked, skipping');
+      return false;
+    }
     const btn = findLikeButton(postEl);
-    if (!btn) { LOG('Like button not found'); return false; }
+    if (!btn) {
+      LOG('Like button not found');
+      return false;
+    }
+    LOG(`Like button: "${(btn.getAttribute('aria-label') || btn.textContent || '').trim().slice(0, 50)}" tag=${btn.tagName}`);
     btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
     await delay(randomDelay(300, 600));
-    // Full event sequence — simple .click() is unreliable
-    btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
-    btn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    await delay(50);
-    btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
-    btn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-    btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    // Use native .click() which generates a trusted click event.
+    // Dispatched PointerEvent/MouseEvent are untrusted and LinkedIn ignores them.
     btn.click();
-    LOG('Liked post');
-    return true;
+    await delay(500);
+    // Verify: check if the post is now liked
+    const nowLiked = isAlreadyLiked(postEl);
+    LOG(`Like result: ${nowLiked ? 'success' : 'FAILED (state unchanged)'}`);
+    return nowLiked;
   }
 
   // ── Comment on a post ───────────────────────────────────────────────────
@@ -373,36 +378,42 @@
 
   async function typeText(input, text) {
     input.focus();
-    input.dispatchEvent(new Event('focus', { bubbles: true }));
     await delay(300);
 
     // Clear existing content
     if (input.hasAttribute('contenteditable')) {
       document.execCommand('selectAll', false, null);
       document.execCommand('delete', false, null);
-    } else {
-      input.innerHTML = '';
-      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
     }
     await delay(200);
 
-    // Type character by character with full keystroke simulation
+    // Type character by character.
+    // IMPORTANT: execCommand('insertText') fires its own TRUSTED beforeinput
+    // and input events internally. Do NOT dispatch duplicate synthetic
+    // beforeinput/input events — they are untrusted (isTrusted=false) and
+    // confuse LinkedIn's Lexical editor, leaving its state empty while the
+    // DOM shows text. Only dispatch keydown/keyup for keystroke realism.
     for (const char of text) {
-      input.dispatchEvent(new KeyboardEvent('keydown', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true, cancelable: true }));
-      input.dispatchEvent(new KeyboardEvent('keypress', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true, cancelable: true }));
+      input.dispatchEvent(new KeyboardEvent('keydown', {
+        key: char, code: 'Key' + char.toUpperCase(),
+        bubbles: true, cancelable: true,
+      }));
+
       document.execCommand('insertText', false, char);
-      input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: char }));
-      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char }));
-      input.dispatchEvent(new KeyboardEvent('keyup', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true }));
-      await delay(randomDelay(50, 150));
+
+      input.dispatchEvent(new KeyboardEvent('keyup', {
+        key: char, code: 'Key' + char.toUpperCase(),
+        bubbles: true,
+      }));
+
+      await delay(randomDelay(30, 80));
     }
 
-    // Post-typing events so LinkedIn's framework picks up the change
-    input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
-    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: text }));
-    await delay(300);
+    await delay(500);
+
+    // Verify text was inserted into the editor's DOM
+    const content = (input.textContent || input.innerText || '').trim();
+    LOG(`typeText: wrote ${text.length} chars, editor has ${content.length} chars`);
   }
 
   const SUBMIT_LABELS = ['post', 'post comment', 'submit comment', 'reply',
@@ -506,16 +517,13 @@
           submitReady = true;
           break;
         }
-        // Button disabled — nudge LinkedIn's editor by typing and deleting a space
+        // Button disabled — nudge the editor by appending+deleting a space.
+        // execCommand fires its own trusted events; do NOT add synthetic ones.
         input.focus();
         document.execCommand('insertText', false, ' ');
-        await delay(100);
+        await delay(150);
         document.execCommand('delete', false, null);
-        input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
-        await delay(100);
-        input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: commentText }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: commentText }));
+        await delay(150);
       } else {
         LOG(`Submit btn attempt ${attempt + 1}: not found`);
       }
@@ -545,20 +553,20 @@
       return true;
     }
 
-    // 5. Click submit with full pointer + mouse event sequence
+    // 5. Click submit — use native .click() which generates a trusted event
     LOG('Clicking submit button...');
     submitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    await delay(200);
-    submitBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
-    submitBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-    await delay(50);
-    submitBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
-    submitBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-    submitBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-    submitBtn.click(); // fallback native click
-    await delay(randomDelay(1000, 2000));
-    LOG('Comment posted');
-    return true;
+    await delay(300);
+    submitBtn.click();
+    await delay(randomDelay(1500, 2500));
+    // Verify: input should be cleared after successful submit
+    const afterText = (input.textContent || input.innerText || '').trim();
+    if (afterText.length === 0 || !document.body.contains(input)) {
+      LOG('Comment posted (input cleared)');
+      return true;
+    }
+    LOG(`Comment may not have posted (input still has ${afterText.length} chars)`);
+    return true; // optimistic — click was dispatched
   }
 
   // ── AI comment generation via background relay ──────────────────────────

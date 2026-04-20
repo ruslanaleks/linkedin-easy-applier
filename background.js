@@ -590,13 +590,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   } else if (message.action === "startProfileVisits") {
     console.log('[Background] Starting influencer profile visits...');
-    runProfileVisits().then(results => {
-      sendResponse({ success: true, results });
-    }).catch(err => {
+    // Send immediate ack — runProfileVisits takes minutes and the message
+    // channel would close with "listener indicated async response" error.
+    // Results are delivered via broadcastToFeedTabs('profileVisitsComplete').
+    sendResponse({ success: true, started: true });
+    runProfileVisits().catch(err => {
       console.warn('[Background] Profile visits failed:', err.message);
-      sendResponse({ success: false, error: err.message });
     });
-    return true; // async
 
   } else if (message.action === "profileVisitorGenerateComment") {
     // Relay AI comment generation to the feed tab (which has feedAI loaded)
