@@ -358,6 +358,148 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     console.log('[FeedMonitor] Weekly history snapshot saved for', currentWeek);
   }
 
+  // ── Continuous Monitoring ─────────────────────────────────────────────
+
+  let _observer = null;
+  let _scanInterval = null;
+  let _observerDebounce = null;
+  let _monitoring = false;
+
+  // How often the periodic scan fires (ms). Tier 1 posts are critical so
+  // we scan relatively often; the scan itself is fast (visible posts only).
+  const CONTINUOUS_SCAN_INTERVAL = 3 * 60 * 1000; // 3 minutes
+
+  // Minimum gap between observer-triggered scans to avoid hammering during
+  // rapid DOM mutations (LinkedIn inserts nodes in bursts as the user scrolls).
+  const OBSERVER_DEBOUNCE_MS = 5000;
+
+  /**
+   * Start continuous monitoring: MutationObserver + periodic interval.
+   * Call once on feed page load. Safe to call multiple times (no-op if running).
+   */
+  function startContinuousMonitoring() {
+    if (_monitoring) return;
+    _monitoring = true;
+
+    console.log('[FeedMonitor] Starting continuous monitoring...');
+
+    // 1. Immediate initial scan for all tiers
+    runFullScan();
+
+    // 2. Periodic scan every CONTINUOUS_SCAN_INTERVAL
+    _scanInterval = setInterval(runFullScan, CONTINUOUS_SCAN_INTERVAL);
+
+    // 3. MutationObserver on feed container to catch new posts as they appear
+    startFeedObserver();
+  }
+
+  /**
+   * Stop continuous monitoring. Called on page unload / cleanup.
+   */
+  function stopContinuousMonitoring() {
+    _monitoring = false;
+    if (_observer) { _observer.disconnect(); _observer = null; }
+    if (_scanInterval) { clearInterval(_scanInterval); _scanInterval = null; }
+    if (_observerDebounce) { clearTimeout(_observerDebounce); _observerDebounce = null; }
+    console.log('[FeedMonitor] Continuous monitoring stopped');
+  }
+
+  /**
+   * Run a scan across all tiers that have enabled influencers.
+   */
+  async function runFullScan() {
+    const _scoring = window.linkedInAutoApply.feedScoring;
+    if (!_scoring) return;
+
+    try {
+      const settings = await _scoring.loadSettings();
+      const list = settings.influencerList || [];
+
+      for (const tier of [1, 2, 3]) {
+        if (list.some(i => i.enabled !== false && i.tier === tier)) {
+          await performInfluencerScan(tier);
+        }
+      }
+    } catch (err) {
+      console.warn('[FeedMonitor] Full scan failed:', err.message);
+    }
+  }
+
+  /**
+   * Observe the feed container for new child nodes (new posts loaded by
+   * LinkedIn as the user scrolls or the SPA updates). Triggers a debounced
+   * scan so we react within seconds of a new post appearing.
+   */
+  function startFeedObserver() {
+    if (_observer) return; // already running
+
+    const _feed = window.linkedInAutoApply.feed;
+    if (!_feed?.findFeedContainer) {
+      // Feed module not ready yet — retry once after a short delay
+      setTimeout(startFeedObserver, 3000);
+      return;
+    }
+
+    const container = _feed.findFeedContainer();
+    if (!container) {
+      console.warn('[FeedMonitor] No feed container found, retrying in 5s...');
+      setTimeout(startFeedObserver, 5000);
+      return;
+    }
+
+    _observer = new MutationObserver(() => {
+      // Debounce: wait for the burst of mutations to settle
+      if (_observerDebounce) clearTimeout(_observerDebounce);
+      _observerDebounce = setTimeout(() => {
+        _observerDebounce = null;
+        runFullScan();
+      }, OBSERVER_DEBOUNCE_MS);
+    });
+
+    _observer.observe(container, { childList: true, subtree: true });
+    console.log('[FeedMonitor] Feed observer attached');
+  }
+
+  // ── Profile Visitor ──────────────────────────────────────────────────
+
+  /**
+   * Kick off profile visits for all enabled influencers with profile URLs.
+   * Background.js handles tab creation, script injection, and orchestration.
+   * @returns {Promise<Object>} results summary
+   */
+  async function visitInfluencerProfiles() {
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.runtime.sendMessage({ action: 'startProfileVisits' }, (resp) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (resp?.success) {
+            resolve(resp.results);
+          } else {
+            reject(new Error(resp?.error || 'Unknown error'));
+          }
+        });
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
+   * Check if profile visits are currently running.
+   */
+  async function getProfileVisitStatus() {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage({ action: 'getProfileVisitStatus' }, (resp) => {
+          resolve(resp || { running: false });
+        });
+      } catch {
+        resolve({ running: false });
+      }
+    });
+  }
+
   // ── Public API ─────────────────────────────────────────────────────────
 
   window.linkedInAutoApply.feedMonitor = {
@@ -368,6 +510,10 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     markAllSeen,
     getWeeklyReport,
     snapshotWeeklyHistory,
+    startContinuousMonitoring,
+    stopContinuousMonitoring,
+    visitInfluencerProfiles,
+    getProfileVisitStatus,
     STORAGE_KEY,
   };
 

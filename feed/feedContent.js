@@ -83,6 +83,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     if (window.linkedInAutoApply.feedMonitor?.processPendingChecks) {
       window.linkedInAutoApply.feedMonitor.processPendingChecks();
     }
+
+    // Start continuous influencer monitoring (MutationObserver + periodic scan)
+    if (window.linkedInAutoApply.feedMonitor?.startContinuousMonitoring) {
+      window.linkedInAutoApply.feedMonitor.startContinuousMonitoring();
+    }
   }
 
   // ── Message Listener (background → content script) ──────────────────
@@ -105,6 +110,49 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         } else {
           console.warn('[FeedContent] feedMonitor not available for scan');
           sendResponse({ newPosts: [], tier, error: 'feedMonitor not loaded' });
+        }
+
+      } else if (message.action === 'generateCommentForProfileVisitor') {
+        // Background relays AI comment request from profile visitor tab
+        const _ai = window.linkedInAutoApply.feedAI;
+        const _eng = window.linkedInAutoApply.feedEngagement;
+        if (_ai?.generateAIComment) {
+          _ai.generateAIComment(message.post).then(comment => {
+            if (comment) {
+              const cleaned = comment.replace(/[\r\n]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+              sendResponse({ comment: cleaned });
+            } else {
+              sendResponse({ comment: null });
+            }
+          }).catch(err => {
+            console.warn('[FeedContent] AI comment for profile visitor failed:', err.message);
+            sendResponse({ comment: null });
+          });
+          return true; // async
+        } else {
+          sendResponse({ comment: null });
+        }
+
+      } else if (message.action === 'profileVisitProgress') {
+        // Update UI with profile visit progress
+        console.log(`[FeedContent] Profile visit: ${message.current}/${message.total} — ${message.influencerName}`);
+        if (window.linkedInAutoApply.feedUI?.updateProfileVisitProgress) {
+          window.linkedInAutoApply.feedUI.updateProfileVisitProgress(message);
+        }
+
+      } else if (message.action === 'profileVisitsComplete') {
+        console.log('[FeedContent] All profile visits complete:', message.results);
+        if (window.linkedInAutoApply.feedUI?.onProfileVisitsComplete) {
+          window.linkedInAutoApply.feedUI.onProfileVisitsComplete(message.results);
+        }
+
+      } else if (message.action === 'profileVisitStatsUpdate') {
+        // Update influencer stats after profile visit engagement
+        const _scoring = window.linkedInAutoApply.feedScoring;
+        if (_scoring?.updateInfluencerStats && message.influencerId) {
+          for (let c = 0; c < (message.commented || 0); c++) {
+            _scoring.updateInfluencerStats(message.influencerId, 'commented').catch(() => {});
+          }
         }
       }
     });
@@ -189,6 +237,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     if (badgeInterval) {
       clearInterval(badgeInterval);
       badgeInterval = null;
+    }
+
+    // Stop continuous influencer monitoring
+    if (window.linkedInAutoApply.feedMonitor?.stopContinuousMonitoring) {
+      window.linkedInAutoApply.feedMonitor.stopContinuousMonitoring();
     }
 
     // Stop any ongoing engagement

@@ -12,7 +12,8 @@
         "tabs"
     ],
     "host_permissions": [
-        "https://api.anthropic.com/*"
+        "https://api.anthropic.com/*",
+        "https://www.linkedin.com/*"
     ],
     "background": {
         "service_worker": "background.js"
@@ -73,7 +74,8 @@
                 "feed/feedMonitor.js",
                 "feed/feedAI.js",
                 "feed/feedUI.js",
-                "feed/feedContent.js"
+                "feed/feedContent.js",
+                "feed/profileVisitor.js"
             ],
             "matches": [
                 "https://www.linkedin.com/*"

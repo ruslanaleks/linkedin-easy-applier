@@ -1270,13 +1270,25 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         </label>
 
         <div id="influencer-section" style="margin: 14px 0 6px 0;">
-          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; flex-wrap:wrap; gap:4px;">
             <strong style="font-size:14px; color:#333;">Influencers</strong>
-            <button type="button" id="inf-add-btn" style="
-              padding: 5px 10px; background: #0073b1; color: #fff; border: none;
-              border-radius: 4px; cursor: pointer; font-size: 12px;">➕ Add influencer</button>
+            <div style="display:flex; gap:4px;">
+              <button type="button" id="inf-visit-profiles-btn" style="
+                padding: 5px 10px; background: #28a745; color: #fff; border: none;
+                border-radius: 4px; cursor: pointer; font-size: 12px;">🚀 Visit Profiles</button>
+              <button type="button" id="inf-export-csv-btn" style="
+                padding: 5px 10px; background: #6c757d; color: #fff; border: none;
+                border-radius: 4px; cursor: pointer; font-size: 12px;">📥 Export CSV</button>
+              <button type="button" id="inf-import-csv-btn" style="
+                padding: 5px 10px; background: #6c757d; color: #fff; border: none;
+                border-radius: 4px; cursor: pointer; font-size: 12px;">📤 Import CSV</button>
+              <button type="button" id="inf-add-btn" style="
+                padding: 5px 10px; background: #0073b1; color: #fff; border: none;
+                border-radius: 4px; cursor: pointer; font-size: 12px;">➕ Add influencer</button>
+            </div>
           </div>
           <div id="inf-tier-container"><!-- populated by renderInfluencerSection() --></div>
+          <div id="inf-visit-status" style="display:none; margin-top:8px; padding:8px 12px; background:#e8f5e9; border-radius:6px; font-size:13px; color:#2e7d32;"></div>
         </div>
 
         <button id="scoring-test-btn" style="
@@ -1313,6 +1325,10 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     // Render influencer section (per-tier containers, live stats)
     renderInfluencerSection(scoringSettings.influencerList || []);
     document.getElementById('inf-add-btn')?.addEventListener('click', () => addInfluencerRow(null));
+    document.getElementById('inf-export-csv-btn')?.addEventListener('click', () => exportInfluencersCsv());
+    document.getElementById('inf-import-csv-btn')?.addEventListener('click', () => importInfluencersCsv());
+    document.getElementById('inf-visit-profiles-btn')?.addEventListener('click', () => startProfileVisits());
+    refreshProfileVisitStatus();
 
     // Theme toggle wiring
     const uiSettings = await loadUiSettings();
@@ -1568,6 +1584,231 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       || (raw => ({ ...raw, id: 'inf_' + Math.random().toString(36).slice(2, 10), enabled: true, stats: {} }));
     current.push(normalize({ name: name.trim(), title: title.trim(), reason: reason.trim(), profileUrl: profileUrl.trim(), tier, enabled: true }));
     renderInfluencerSection(current);
+  }
+
+  function escapeCsvField(value) {
+    const str = String(value ?? '');
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return '"' + str.replace(/"/g, '""') + '"';
+    }
+    return str;
+  }
+
+  function exportInfluencersCsv() {
+    const list = readInfluencerSection();
+    if (list.length === 0) {
+      alert('No influencers to export.');
+      return;
+    }
+    const headers = ['name', 'title', 'tier', 'enabled', 'reason', 'profileUrl'];
+    const rows = [headers.join(',')];
+    for (const inf of list) {
+      rows.push(headers.map(h => escapeCsvField(h === 'enabled' ? (inf[h] !== false) : inf[h])).join(','));
+    }
+    const csv = rows.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'influencers.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function parseCsvLine(line) {
+    const fields = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (inQuotes) {
+        if (ch === '"' && line[i + 1] === '"') { current += '"'; i++; }
+        else if (ch === '"') { inQuotes = false; }
+        else { current += ch; }
+      } else {
+        if (ch === '"') { inQuotes = true; }
+        else if (ch === ',') { fields.push(current); current = ''; }
+        else { current += ch; }
+      }
+    }
+    fields.push(current);
+    return fields;
+  }
+
+  function importInfluencersCsv() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv,text/csv';
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const text = reader.result;
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        if (lines.length < 2) { alert('CSV file is empty or has no data rows.'); return; }
+
+        const headers = parseCsvLine(lines[0]).map(h => h.trim().toLowerCase());
+        const nameIdx = headers.indexOf('name');
+        if (nameIdx === -1) { alert('CSV must have a "name" column.'); return; }
+
+        const normalize = window.linkedInAutoApply.feedScoring?.normalizeInfluencer
+          || (raw => ({ ...raw, id: 'inf_' + Math.random().toString(36).slice(2, 10), enabled: true, stats: {} }));
+
+        const imported = [];
+        for (let i = 1; i < lines.length; i++) {
+          const fields = parseCsvLine(lines[i]);
+          const name = (fields[nameIdx] || '').trim();
+          if (!name) continue;
+          const get = key => { const idx = headers.indexOf(key); return idx >= 0 ? (fields[idx] || '').trim() : ''; };
+          const tierRaw = parseInt(get('tier'), 10);
+          const tier = [1, 2, 3].includes(tierRaw) ? tierRaw : 2;
+          const enabledStr = get('enabled').toLowerCase();
+          const enabled = enabledStr === '' || enabledStr === 'true' || enabledStr === '1';
+          imported.push(normalize({
+            name,
+            title: get('title'),
+            reason: get('reason'),
+            profileUrl: get('profileurl') || get('profile_url') || get('url'),
+            tier,
+            enabled
+          }));
+        }
+
+        if (imported.length === 0) { alert('No valid influencers found in CSV.'); return; }
+
+        const mode = confirm(
+          `Found ${imported.length} influencer(s) in CSV.\n\nOK = Merge with existing list\nCancel = Replace entire list`
+        );
+        let finalList;
+        if (mode) {
+          const current = readInfluencerSection();
+          const existingNames = new Set(current.map(i => i.name.toLowerCase()));
+          let skipped = 0;
+          for (const inf of imported) {
+            if (existingNames.has(inf.name.toLowerCase())) { skipped++; continue; }
+            current.push(inf);
+            existingNames.add(inf.name.toLowerCase());
+          }
+          finalList = current;
+          if (skipped > 0) alert(`Merged. ${skipped} duplicate(s) skipped (same name).`);
+        } else {
+          finalList = imported;
+        }
+        renderInfluencerSection(finalList);
+      };
+      reader.readAsText(file);
+    });
+    input.click();
+  }
+
+  async function refreshProfileVisitStatus() {
+    const statusEl = document.getElementById('inf-visit-status');
+    if (!statusEl) return;
+    try {
+      const data = await new Promise(r => chrome.storage.local.get('profileVisitLastRun', r));
+      const lastRun = data?.profileVisitLastRun;
+      if (lastRun) {
+        statusEl.style.display = 'block';
+        statusEl.style.background = '#f5f5f5';
+        statusEl.style.color = '#666';
+        const ago = formatRelativeTime(lastRun);
+        statusEl.innerHTML = `<span style="font-size:12px;">Auto-visits active (every ~4h, 8:00–22:00) · Last run: <strong>${ago}</strong></span>`;
+      }
+    } catch {}
+  }
+
+  async function startProfileVisits() {
+    const btn = document.getElementById('inf-visit-profiles-btn');
+    const statusEl = document.getElementById('inf-visit-status');
+
+    // Check if already running
+    const monitor = window.linkedInAutoApply.feedMonitor;
+    if (!monitor?.visitInfluencerProfiles) {
+      alert('Feed monitor module not available.');
+      return;
+    }
+
+    const status = await monitor.getProfileVisitStatus();
+    if (status.running) {
+      alert('Profile visits are already running.');
+      return;
+    }
+
+    // Confirm
+    const infCount = readInfluencerSection().filter(i => i.profileUrl).length;
+    if (infCount === 0) {
+      alert('No influencers have a profile URL set. Add profile URLs first.');
+      return;
+    }
+    if (!confirm(`Visit ${infCount} influencer profile(s) to like & comment on their recent posts?\n\nA background tab will open for each profile.`)) {
+      return;
+    }
+
+    // Update UI
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = '⏳ Visiting...';
+      btn.style.background = '#aaa';
+    }
+    if (statusEl) {
+      statusEl.style.display = 'block';
+      statusEl.textContent = 'Starting profile visits...';
+    }
+
+    try {
+      await monitor.visitInfluencerProfiles();
+    } catch (err) {
+      if (statusEl) {
+        statusEl.style.background = '#ffebee';
+        statusEl.style.color = '#c62828';
+        statusEl.textContent = 'Profile visits failed: ' + err.message;
+      }
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = '🚀 Visit Profiles';
+        btn.style.background = '#28a745';
+      }
+    }
+  }
+
+  function updateProfileVisitProgress(data) {
+    const statusEl = document.getElementById('inf-visit-status');
+    if (!statusEl) return;
+    statusEl.style.display = 'block';
+    statusEl.style.background = '#e8f5e9';
+    statusEl.style.color = '#2e7d32';
+    statusEl.textContent = `Visiting ${data.influencerName}... (${data.current}/${data.total})`;
+  }
+
+  function onProfileVisitsComplete(results) {
+    const statusEl = document.getElementById('inf-visit-status');
+    const btn = document.getElementById('inf-visit-profiles-btn');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '🚀 Visit Profiles';
+      btn.style.background = '#28a745';
+    }
+    if (!statusEl) return;
+    statusEl.style.display = 'block';
+
+    if (!Array.isArray(results)) {
+      statusEl.textContent = 'Profile visits completed.';
+      return;
+    }
+
+    const totalLiked = results.reduce((s, r) => s + (r.liked || 0), 0);
+    const totalCommented = results.reduce((s, r) => s + (r.commented || 0), 0);
+    const errors = results.filter(r => r.error).length;
+
+    statusEl.style.background = errors > 0 ? '#fff3e0' : '#e8f5e9';
+    statusEl.style.color = errors > 0 ? '#e65100' : '#2e7d32';
+    statusEl.innerHTML = `<strong>Done!</strong> ${results.length} profiles visited: ` +
+      `${totalLiked} liked, ${totalCommented} commented` +
+      (errors > 0 ? `, ${errors} errors` : '');
   }
 
   function readInfluencerSection() {
@@ -2339,6 +2580,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     updateProgress,
     updateProgressBar,
     updateBadges,
+    updateProfileVisitProgress,
+    onProfileVisitsComplete,
   };
 
   console.log('[FeedUI] Module loaded successfully');
