@@ -383,15 +383,28 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
 
     console.log('[FeedMonitor] Starting continuous monitoring...');
 
-    // 1. Immediate initial scan for all tiers
-    runFullScan();
+    // 1. Immediate initial scan (only if tab is visible)
+    if (document.visibilityState === 'visible') {
+      runFullScan();
+    }
 
     // 2. Periodic scan every CONTINUOUS_SCAN_INTERVAL
     _scanInterval = setInterval(runFullScan, CONTINUOUS_SCAN_INTERVAL);
 
     // 3. MutationObserver on feed container to catch new posts as they appear
     startFeedObserver();
+
+    // 4. Pause/resume scanning when tab visibility changes
+    _visibilityHandler = () => {
+      if (document.visibilityState === 'visible') {
+        console.log('[FeedMonitor] Tab became visible — running scan');
+        runFullScan();
+      }
+    };
+    document.addEventListener('visibilitychange', _visibilityHandler);
   }
+
+  let _visibilityHandler = null;
 
   /**
    * Stop continuous monitoring. Called on page unload / cleanup.
@@ -401,13 +414,21 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     if (_observer) { _observer.disconnect(); _observer = null; }
     if (_scanInterval) { clearInterval(_scanInterval); _scanInterval = null; }
     if (_observerDebounce) { clearTimeout(_observerDebounce); _observerDebounce = null; }
+    if (_visibilityHandler) {
+      document.removeEventListener('visibilitychange', _visibilityHandler);
+      _visibilityHandler = null;
+    }
     console.log('[FeedMonitor] Continuous monitoring stopped');
   }
 
   /**
    * Run a scan across all tiers that have enabled influencers.
+   * Skips silently when the tab is hidden (LinkedIn unloads feed DOM in
+   * background tabs, so scanning would always fail).
    */
   async function runFullScan() {
+    if (document.visibilityState !== 'visible') return;
+
     const _scoring = window.linkedInAutoApply.feedScoring;
     if (!_scoring) return;
 
@@ -448,6 +469,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     }
 
     _observer = new MutationObserver(() => {
+      if (document.visibilityState !== 'visible') return;
       // Debounce: wait for the burst of mutations to settle
       if (_observerDebounce) clearTimeout(_observerDebounce);
       _observerDebounce = setTimeout(() => {

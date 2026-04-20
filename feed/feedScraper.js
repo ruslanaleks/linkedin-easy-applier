@@ -466,7 +466,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       console.warn('[FeedScraper] Deep heuristic strategy failed:', err.message);
     }
 
-    console.warn('[FeedScraper] No posts found with any strategy');
+    // Not a warning — normal when tab is in background (LinkedIn unloads feed DOM)
+    console.log('[FeedScraper] No posts found with any strategy (tab may be hidden)');
     return [];
   }
 
