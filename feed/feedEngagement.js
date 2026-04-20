@@ -3854,7 +3854,9 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           stats: sessionStats,
         });
       } catch (msgErr) {
-        console.warn('[FeedEngagement] Could not notify background:', msgErr.message);
+        if (!msgErr.message?.includes('Extension context invalidated')) {
+          console.warn('[FeedEngagement] Could not notify background:', msgErr.message);
+        }
       }
 
     } catch (err) {
