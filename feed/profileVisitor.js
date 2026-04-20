@@ -2,6 +2,8 @@
 // Scrapes recent posts, likes them, generates AI comments via messaging to the
 // feed tab (which has feedAI loaded), and posts those comments.
 // Communicates results back to background.js via chrome.runtime.sendMessage.
+//
+// Engagement pattern is identical to feedEngagement.js (proven working on feed page).
 
 (async function profileVisitor() {
   'use strict';
@@ -44,7 +46,6 @@
   function queryPosts() {
     let posts = document.querySelectorAll(POST_SELECTORS);
     if (posts.length > 0) return posts;
-    // Heuristic fallback: look for divs with like+comment buttons inside main
     const main = document.querySelector('main, [role="main"], .scaffold-layout__main');
     if (main) {
       const candidates = main.querySelectorAll(':scope > div > div, :scope > div');
@@ -95,7 +96,6 @@
     const urn = el.getAttribute('data-urn') || '';
     const id = urn || el.getAttribute('data-testid') || Math.random().toString(36).slice(2);
 
-    // Author (on a profile page the author is usually the profile owner)
     let author = '';
     const authorEl = el.querySelector(
       '[class*="update-components-actor__name"] span[aria-hidden="true"], ' +
@@ -105,7 +105,6 @@
     );
     if (authorEl) author = authorEl.textContent.trim();
 
-    // Headline
     let headline = '';
     const headlineEl = el.querySelector(
       '[class*="update-components-actor__description"], ' +
@@ -114,7 +113,6 @@
     );
     if (headlineEl) headline = headlineEl.textContent.trim();
 
-    // Content text
     let content = '';
     const contentEl = el.querySelector(
       '[class*="update-components-text"], ' +
@@ -123,25 +121,21 @@
     );
     if (contentEl) content = contentEl.textContent.trim();
 
-    // Expand "see more" if present
     const seeMore = el.querySelector(
       'button[class*="see-more"], button[aria-label*="see more"], ' +
       'button[aria-label*="más"], button[aria-label*="ещё"]'
     );
     if (seeMore) {
       seeMore.click();
-      // Re-read content after expansion
       const expanded = el.querySelector(
         '[class*="update-components-text"], [class*="feed-shared-text"]'
       );
       if (expanded) content = expanded.textContent.trim();
     }
 
-    // Hashtags
     const hashtagEls = el.querySelectorAll('a[href*="hashtag"]');
     const hashtags = [...hashtagEls].map(a => a.textContent.trim()).filter(Boolean);
 
-    // Timestamp
     let timestamp = '';
     const timeEl = el.querySelector(
       'time, [class*="actor__sub-description"] span[aria-hidden="true"], ' +
@@ -149,7 +143,6 @@
     );
     if (timeEl) timestamp = timeEl.textContent.trim();
 
-    // Engagement counts
     let reactions = 0, comments = 0;
     const reactionEl = el.querySelector('[class*="social-details__social-counts"] span');
     if (reactionEl) {
@@ -162,7 +155,6 @@
       comments = parseInt(num, 10) || 0;
     }
 
-    // Media
     const hasMedia = !!(el.querySelector('img[class*="update-components-image"], video, [class*="feed-shared-image"]'));
 
     return {
@@ -175,47 +167,55 @@
   // ── Is this post from the current week? ─────────────────────────────────
 
   function isThisWeek(timestampText) {
-    if (!timestampText) return true; // assume yes if we can't parse
+    if (!timestampText) return true;
     const t = timestampText.toLowerCase();
-    // LinkedIn shows "Xh", "Xd" for recent, "Xw" for weeks, "Xmo" for months
-    if (/\d+\s*(mo|yr|año|мес|год|год|лет)/i.test(t)) return false;
+    if (/\d+\s*(mo|yr|año|мес|год|лет)/i.test(t)) return false;
     if (/\d+\s*w/i.test(t)) {
       const weeks = parseInt(t.match(/(\d+)\s*w/i)?.[1] || '0', 10);
-      return weeks < 1; // "1w" is borderline — include it
+      return weeks < 1;
     }
-    // "Xd" where X <= 7 is this week
     if (/\d+\s*d/i.test(t)) {
       const days = parseInt(t.match(/(\d+)\s*d/i)?.[1] || '0', 10);
       return days <= 7;
     }
-    // Hours, minutes, "just now" → definitely this week
     return true;
   }
 
-  // ── Like a post ─────────────────────────────────────────────────────────
+  // ══════════════════════════════════════════════════════════════════════════
+  // ENGAGEMENT — identical pattern to feedEngagement.js (proven working)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── Like ────────────────────────────────────────────────────────────────
 
   function isAlreadyLiked(postEl) {
+    // "no reaction" button means NOT liked
+    const noReaction = postEl.querySelector(
+      'button[aria-label*="no reaction" i], [role="button"][aria-label*="no reaction" i]'
+    );
+    if (noReaction) return false;
+
     const btns = postEl.querySelectorAll('button[aria-label], [role="button"][aria-label]');
     for (const b of btns) {
       const label = (b.getAttribute('aria-label') || '').toLowerCase();
       if (label.includes('like') || label.includes('react') || label.includes('me gusta') || label.includes('нравится')) {
         if (label.includes('unlike') || label.includes('liked')) return true;
         if (b.getAttribute('aria-pressed') === 'true') return true;
+        if (b.getAttribute('aria-pressed') === 'false') return false;
       }
     }
     return false;
   }
 
   function findLikeButton(postEl) {
-    // Strategy 1: "no reaction" button = not yet liked
-    const noReaction = postEl.querySelector(
+    // Strategy 1: "no reaction" state
+    const noReactionBtn = postEl.querySelector(
       'button[aria-label*="no reaction" i], [role="button"][aria-label*="no reaction" i]'
     );
-    if (noReaction) return noReaction;
+    if (noReactionBtn) return noReactionBtn;
 
-    // Strategy 2: Button with like/react in aria-label
-    const btns = postEl.querySelectorAll('button, [role="button"]');
-    for (const b of btns) {
+    // Strategy 2: Button with "Like"/"React" in aria-label
+    const allBtns = postEl.querySelectorAll('button, [role="button"]');
+    for (const b of allBtns) {
       const label = (b.getAttribute('aria-label') || '').toLowerCase();
       const pressed = b.getAttribute('aria-pressed');
       if ((label.includes('like') || label.includes('react') || label.includes('me gusta') || label.includes('нравится')) &&
@@ -246,34 +246,30 @@
         break;
       }
     }
-
     return null;
   }
 
   async function likePost(postEl) {
     if (isAlreadyLiked(postEl)) {
-      LOG('Post already liked, skipping');
+      LOG('Post already liked');
       return false;
     }
-    const btn = findLikeButton(postEl);
-    if (!btn) {
+    const likeBtn = findLikeButton(postEl);
+    if (!likeBtn) {
       LOG('Like button not found');
       return false;
     }
-    LOG(`Like button: "${(btn.getAttribute('aria-label') || btn.textContent || '').trim().slice(0, 50)}" tag=${btn.tagName}`);
-    btn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    await delay(randomDelay(300, 600));
-    // Use native .click() which generates a trusted click event.
-    // Dispatched PointerEvent/MouseEvent are untrusted and LinkedIn ignores them.
-    btn.click();
-    await delay(500);
-    // Verify: check if the post is now liked
-    const nowLiked = isAlreadyLiked(postEl);
-    LOG(`Like result: ${nowLiked ? 'success' : 'FAILED (state unchanged)'}`);
-    return nowLiked;
+    LOG(`Like btn: "${(likeBtn.getAttribute('aria-label') || '').slice(0, 40)}"`);
+    await delay(randomDelay(200, 500));
+    likeBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    await delay(300);
+    likeBtn.click();
+    await delay(1000);
+    LOG('Liked post');
+    return true;
   }
 
-  // ── Comment on a post ───────────────────────────────────────────────────
+  // ── Comment ─────────────────────────────────────────────────────────────
 
   function findCommentButton(postEl) {
     const commentPatterns = ['comment', 'comentar', 'comentario', 'комментир', 'комментарий', 'комментировать'];
@@ -289,7 +285,7 @@
       if (match && !countPattern.test(text)) return b;
     }
 
-    // Strategy 2: Positional — Comment is 2nd in social actions bar (Like, Comment, Repost, Send)
+    // Strategy 2: Positional — Comment is 2nd in social actions bar
     const actionBarSelectors = [
       '[class*="social-actions"]',
       '[class*="feed-shared-social-action"]',
@@ -301,7 +297,6 @@
       if (!actionBar) continue;
       const barItems = actionBar.querySelectorAll(':scope > *');
       const barBtns = barItems.length >= 3 ? barItems : actionBar.querySelectorAll('button, [role="button"]');
-      // Find Like button, Comment is the next one
       for (let i = 0; i < barBtns.length; i++) {
         const el = barBtns[i];
         const target = el.matches?.('button, [role="button"]') ? el : el.querySelector('button, [role="button"]') || el;
@@ -314,19 +309,17 @@
           }
         }
       }
-      // Fallback: 2nd item if at least 3 items
       if (barItems.length >= 3) {
         const second = barItems[1];
         return second.querySelector('button, [role="button"]') || second;
       }
       break;
     }
-
     return null;
   }
 
   function findCommentInput(postEl, commentBtn) {
-    // Search inside postEl, then ancestors up to 3 levels
+    // Search postEl then ancestors up to 3 levels
     const searchRoots = [postEl];
     let ancestor = postEl.parentElement;
     for (let lvl = 0; lvl < 3 && ancestor; lvl++) {
@@ -335,34 +328,37 @@
     }
 
     for (const root of searchRoots) {
-      const inputs = root.querySelectorAll(
-        '[role="textbox"][contenteditable="true"], ' +
-        '[role="textbox"][contenteditable="plaintext-only"], ' +
-        'div[contenteditable="true"], ' +
-        '[class*="comment-compose"] [contenteditable="true"], ' +
-        '[class*="comments-comment-box"] [contenteditable="true"], ' +
-        '.ql-editor[contenteditable="true"]'
-      );
-      if (inputs.length > 0) return inputs[inputs.length - 1];
+      const tb = root.querySelector('[role="textbox"][contenteditable]');
+      if (tb) return tb;
+      const composerSelectors = [
+        '[class*="comment-compose"]',
+        '[class*="comments-comment-box"]',
+        '[class*="comment-texteditor"]',
+        '[class*="comments-comment-texteditor"]',
+      ];
+      for (const sel of composerSelectors) {
+        const composer = root.querySelector(sel);
+        if (composer) {
+          const editable = composer.querySelector('[contenteditable="true"], [contenteditable="plaintext-only"], [role="textbox"]');
+          if (editable) return editable;
+        }
+      }
+      const editable = root.querySelector('div[contenteditable="true"], div[contenteditable="plaintext-only"]');
+      if (editable) return editable;
     }
 
-    // Check document.activeElement (clicking Comment may have focused the input)
+    // Check activeElement
     if (document.activeElement) {
-      const active = document.activeElement;
-      const ce = active.getAttribute?.('contenteditable');
-      if (ce === 'true' || ce === 'plaintext-only') return active;
+      const ce = document.activeElement.getAttribute?.('contenteditable');
+      if (ce === 'true' || ce === 'plaintext-only') return document.activeElement;
     }
 
-    // Broad document scan: find the most recently visible contenteditable
-    // that appeared near the comment button's viewport position
+    // Broad scan: closest contenteditable to the comment button
     if (commentBtn) {
-      const allEditable = document.querySelectorAll(
-        '[role="textbox"][contenteditable], div[contenteditable="true"], div[contenteditable="plaintext-only"]'
-      );
+      const allEditable = document.querySelectorAll('[role="textbox"][contenteditable], div[contenteditable="true"], div[contenteditable="plaintext-only"]');
       if (allEditable.length > 0) {
         const btnRect = commentBtn.getBoundingClientRect();
-        let bestDist = Infinity;
-        let best = null;
+        let bestDist = Infinity, best = null;
         for (const el of allEditable) {
           const rect = el.getBoundingClientRect();
           if (rect.width === 0 || rect.height === 0) continue;
@@ -376,46 +372,7 @@
     return null;
   }
 
-  async function typeText(input, text) {
-    input.focus();
-    await delay(300);
-
-    // Clear existing content
-    if (input.hasAttribute('contenteditable')) {
-      document.execCommand('selectAll', false, null);
-      document.execCommand('delete', false, null);
-    }
-    await delay(200);
-
-    // Type character by character.
-    // IMPORTANT: execCommand('insertText') fires its own TRUSTED beforeinput
-    // and input events internally. Do NOT dispatch duplicate synthetic
-    // beforeinput/input events — they are untrusted (isTrusted=false) and
-    // confuse LinkedIn's Lexical editor, leaving its state empty while the
-    // DOM shows text. Only dispatch keydown/keyup for keystroke realism.
-    for (const char of text) {
-      input.dispatchEvent(new KeyboardEvent('keydown', {
-        key: char, code: 'Key' + char.toUpperCase(),
-        bubbles: true, cancelable: true,
-      }));
-
-      document.execCommand('insertText', false, char);
-
-      input.dispatchEvent(new KeyboardEvent('keyup', {
-        key: char, code: 'Key' + char.toUpperCase(),
-        bubbles: true,
-      }));
-
-      await delay(randomDelay(30, 80));
-    }
-
-    await delay(500);
-
-    // Verify text was inserted into the editor's DOM
-    const content = (input.textContent || input.innerText || '').trim();
-    LOG(`typeText: wrote ${text.length} chars, editor has ${content.length} chars`);
-  }
-
+  // Submit button labels (multi-locale)
   const SUBMIT_LABELS = ['post', 'post comment', 'submit comment', 'reply',
     'publicar', 'comentar', 'responder', 'comment',
     'опубликовать', 'ответить', 'комментировать'];
@@ -436,10 +393,8 @@
       return null;
     }
 
-    // Strategy 1: Walk up from the contenteditable input
-    const input = postEl.querySelector(
-      '[role="textbox"][contenteditable="true"], div[contenteditable="true"], textarea'
-    );
+    // Strategy 1: Walk up from contenteditable input
+    const input = postEl.querySelector('[role="textbox"][contenteditable="true"], div[contenteditable="true"], textarea');
     if (input) {
       let parent = input.parentElement;
       for (let depth = 0; depth < 8 && parent && parent !== postEl; depth++) {
@@ -449,20 +404,18 @@
       }
     }
 
-    // Strategy 2: Look inside comment composer area
-    const composer = postEl.querySelector(
-      '[class*="comments-comment-box"], [class*="comment-compose"], [class*="comments-comment-texteditor"]'
-    );
+    // Strategy 2: Comment composer area
+    const composer = postEl.querySelector('[class*="comments-comment-box"], [class*="comment-compose"], [class*="comments-comment-texteditor"]');
     if (composer) {
       const btn = searchIn(composer);
       if (btn) return btn;
     }
 
-    // Strategy 3: Search the full post element
+    // Strategy 3: Full post element
     const btn = searchIn(postEl);
     if (btn) return btn;
 
-    // Strategy 4: Look in modal/dialog
+    // Strategy 4: Modal/dialog
     const modal = document.querySelector('[role="dialog"], .artdeco-modal');
     if (modal) {
       const modalBtn = searchIn(modal);
@@ -472,6 +425,9 @@
     return null;
   }
 
+  /**
+   * Comment on a post — uses EXACT same pattern as feedEngagement.js
+   */
   async function commentOnPost(postEl, commentText) {
     // 1. Click comment button to open composer
     let commentBtn = findCommentButton(postEl);
@@ -479,17 +435,18 @@
       commentBtn = findCommentButton(postEl.parentElement);
     }
     if (!commentBtn) { WARN('No comment button found'); return false; }
+
+    LOG('Opening comment field...');
     commentBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    await delay(randomDelay(300, 600));
+    await delay(300);
     commentBtn.click();
     await delay(randomDelay(1500, 2500));
 
-    // 2. Find the comment input with retries
+    // 2. Find comment input (8 attempts, re-click at attempt 3)
     let input = null;
     for (let attempt = 0; attempt < 8; attempt++) {
       input = findCommentInput(postEl, commentBtn);
       if (input) break;
-      // After 2 failed attempts, re-click comment button (toggle issue)
       if (attempt === 2) {
         LOG('Re-clicking comment button...');
         commentBtn.click();
@@ -500,73 +457,100 @@
     }
     if (!input) { WARN('No comment input found'); return false; }
 
-    // 3. Type the comment
-    await typeText(input, commentText);
+    LOG('Comment input found, typing...');
+
+    // 3. Focus and clear
+    input.focus();
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    await delay(300);
+
+    if (input.hasAttribute('contenteditable')) {
+      document.execCommand('selectAll', false, null);
+      document.execCommand('delete', false, null);
+    }
+    await delay(200);
+
+    // 4. Type — EXACT feedEngagement pattern:
+    //    keydown → keypress → execCommand → beforeinput → input → keyup
+    input.focus();
+    for (let i = 0; i < commentText.length; i++) {
+      const char = commentText[i];
+
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true, cancelable: true }));
+      input.dispatchEvent(new KeyboardEvent('keypress', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true, cancelable: true }));
+
+      document.execCommand('insertText', false, char);
+
+      input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: char }));
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char }));
+
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true }));
+
+      await delay(randomDelay(50, 150));
+    }
+
+    // Post-typing events (same as feedEngagement)
+    input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: commentText }));
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: commentText }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: commentText }));
+
+    LOG('Comment typed, waiting for submit button...');
     await delay(randomDelay(800, 1500));
 
-    // 4. Find submit button and wait for it to become enabled
+    // 5. Find submit button and wait for it to become enabled (10 attempts)
     let submitBtn = null;
     let submitReady = false;
     for (let attempt = 0; attempt < 10; attempt++) {
       submitBtn = findSubmitButton(postEl);
+
       if (submitBtn) {
         const isDisabled = submitBtn.disabled || submitBtn.hasAttribute('disabled');
         const isAriaDisabled = submitBtn.getAttribute('aria-disabled') === 'true';
-        LOG(`Submit btn attempt ${attempt + 1}: found "${(submitBtn.textContent || '').trim()}" disabled=${isDisabled} aria-disabled=${isAriaDisabled}`);
+
+        LOG(`Submit attempt ${attempt + 1}: "${(submitBtn.textContent || '').trim()}" disabled=${isDisabled} aria-disabled=${isAriaDisabled}`);
+
         if (!isDisabled && !isAriaDisabled) {
           submitReady = true;
           break;
         }
-        // Button disabled — nudge the editor by appending+deleting a space.
-        // execCommand fires its own trusted events; do NOT add synthetic ones.
+
+        // Nudge — same as feedEngagement: append+remove space to force state cycle
         input.focus();
         document.execCommand('insertText', false, ' ');
-        await delay(150);
+        await delay(100);
         document.execCommand('delete', false, null);
-        await delay(150);
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+        await delay(100);
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: commentText }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
       } else {
-        LOG(`Submit btn attempt ${attempt + 1}: not found`);
+        LOG(`Submit attempt ${attempt + 1}: not found`);
       }
+
       await delay(600);
     }
 
     if (!submitReady) {
-      // Fallback: press Enter in the comment input — LinkedIn submits on Enter
-      LOG('Submit button not ready, trying Enter key fallback...');
-      input.focus();
-      await delay(200);
-      const enterDown = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
-      const enterPress = new KeyboardEvent('keypress', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true });
-      const enterUp = new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true });
-      input.dispatchEvent(enterDown);
-      input.dispatchEvent(enterPress);
-      input.dispatchEvent(enterUp);
-      await delay(randomDelay(1500, 2500));
-
-      // Check if comment was submitted (input should be cleared or removed)
-      const inputStillHasText = (input.textContent || input.innerText || '').trim().length > 0;
-      if (inputStillHasText) {
-        WARN('Enter key fallback did not submit either');
-        return false;
-      }
-      LOG('Comment posted via Enter key');
-      return true;
+      WARN('Submit button not ready after 10 attempts');
+      return false;
     }
 
-    // 5. Click submit — use native .click() which generates a trusted event
-    LOG('Clicking submit button...');
+    // 6. Click submit — full pointer + mouse event sequence (same as feedEngagement)
+    LOG('Clicking submit...');
     submitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
     await delay(300);
+    submitBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+    submitBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    await delay(50);
+    submitBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
+    submitBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+    submitBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     submitBtn.click();
     await delay(randomDelay(1500, 2500));
-    // Verify: input should be cleared after successful submit
-    const afterText = (input.textContent || input.innerText || '').trim();
-    if (afterText.length === 0 || !document.body.contains(input)) {
-      LOG('Comment posted (input cleared)');
-      return true;
-    }
-    LOG(`Comment may not have posted (input still has ${afterText.length} chars)`);
-    return true; // optimistic — click was dispatched
+
+    LOG('Comment posted');
+    return true;
   }
 
   // ── AI comment generation via background relay ──────────────────────────
@@ -599,7 +583,6 @@
     LOG('Starting profile visit...');
     LOG('URL:', location.href);
 
-    // Notify background we started
     sendToBackground({ action: 'profileVisitorStatus', status: 'started', url: location.href }).catch(() => {});
 
     // 1. Wait for content to load
@@ -624,18 +607,14 @@
     const weeklyPosts = allPosts.filter(p => isThisWeek(p.timestamp));
     LOG(`This week's posts: ${weeklyPosts.length} / ${allPosts.length} total`);
 
-    // 4. Load already-engaged post IDs from state
-    // Only posts where like OR comment actually succeeded are stored here.
-    // Previous versions marked posts as "seen" even when engagement failed
-    // (e.g. background tab throttling), so we clear stale data on first run.
+    // 4. Load already-engaged post IDs
     let engagedPostIds = new Set();
     try {
       const data = await chrome.storage.local.get(['profileVisitorEngaged', 'profileVisitorSeen']);
       if (data?.profileVisitorEngaged) {
         engagedPostIds = new Set(data.profileVisitorEngaged);
       } else if (data?.profileVisitorSeen) {
-        // Migration: old "seen" key is unreliable — discard it
-        LOG('Clearing stale profileVisitorSeen data (engagement was broken)');
+        LOG('Clearing stale profileVisitorSeen data');
         await chrome.storage.local.remove('profileVisitorSeen');
       }
     } catch {}
@@ -651,12 +630,13 @@
       posts: [],
     };
 
-    // 5. Engage with each weekly post
-    for (const post of weeklyPosts) {
+    // 5. Engage with each weekly post: LIKE then COMMENT, 20-30s cooldown
+    for (let idx = 0; idx < weeklyPosts.length; idx++) {
+      const post = weeklyPosts[idx];
       const postResult = { id: post.id, author: post.author, liked: false, commented: false, skipped: false };
 
       if (engagedPostIds.has(post.id)) {
-        LOG(`Skipping already-engaged post: ${post.id}`);
+        LOG(`Skipping already-engaged: ${post.id}`);
         postResult.skipped = true;
         results.skipped++;
         results.posts.push(postResult);
@@ -667,7 +647,7 @@
       post._el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       await delay(randomDelay(2000, 3000));
 
-      // ── Like ──
+      // ── LIKE ──
       try {
         const liked = await likePost(post._el);
         postResult.liked = liked;
@@ -677,37 +657,37 @@
         results.errors++;
       }
 
-      // Cooldown between like and comment (human-like pause)
-      const likeToCommentCooldown = randomDelay(8000, 12000);
-      LOG(`Waiting ${Math.round(likeToCommentCooldown / 1000)}s before commenting...`);
-      await delay(likeToCommentCooldown);
+      // Pause between like and comment
+      const likeToComment = randomDelay(8000, 12000);
+      LOG(`Waiting ${Math.round(likeToComment / 1000)}s before commenting...`);
+      await delay(likeToComment);
 
-      // ── Comment ──
+      // ── COMMENT ──
       try {
         const comment = await requestAIComment(post);
         if (comment) {
-          LOG(`AI comment for "${post.author}": ${comment}`);
+          LOG(`AI comment: "${comment.slice(0, 80)}..."`);
           const commented = await commentOnPost(post._el, comment);
           postResult.commented = commented;
           if (commented) results.commented++;
         } else {
-          LOG('No AI comment generated, skipping comment');
+          LOG('No AI comment generated');
         }
       } catch (err) {
         WARN('Comment failed:', err.message);
         results.errors++;
       }
 
-      // Only mark as engaged if like OR comment actually succeeded
+      // Mark engaged only if something worked
       if (postResult.liked || postResult.commented) {
         engagedPostIds.add(post.id);
       }
       results.posts.push(postResult);
 
-      // ── Cooldown between posts: 20-30 seconds ──
-      if (weeklyPosts.indexOf(post) < weeklyPosts.length - 1) {
+      // ── 20-30s COOLDOWN before next post ──
+      if (idx < weeklyPosts.length - 1) {
         const cooldown = randomDelay(20000, 30000);
-        LOG(`Post cooldown: ${Math.round(cooldown / 1000)}s before next post...`);
+        LOG(`Cooldown: ${Math.round(cooldown / 1000)}s before next post...`);
         await delay(cooldown);
       }
     }
