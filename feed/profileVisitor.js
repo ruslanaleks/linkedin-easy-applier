@@ -32,23 +32,41 @@
 
   // ── Wait for page to fully load ─────────────────────────────────────────
 
+  const POST_SELECTORS = [
+    'div[data-urn^="urn:li:activity"]',
+    'div[data-urn^="urn:li:ugcPost"]',
+    '[class*="profile-creator-shared-feed-update"]',
+    '[data-testid="main-feed-activity-card"]',
+    '.feed-shared-update-v2',
+    '[data-id][class*="update"]',
+  ].join(', ');
+
+  function queryPosts() {
+    let posts = document.querySelectorAll(POST_SELECTORS);
+    if (posts.length > 0) return posts;
+    // Heuristic fallback: look for divs with like+comment buttons inside main
+    const main = document.querySelector('main, [role="main"], .scaffold-layout__main');
+    if (main) {
+      const candidates = main.querySelectorAll(':scope > div > div, :scope > div');
+      const filtered = [...candidates].filter(el => {
+        const hasButtons = el.querySelectorAll('button').length >= 2;
+        const hasText = (el.innerText || '').length > 50;
+        const rect = el.getBoundingClientRect();
+        return hasButtons && hasText && rect.height > 100;
+      });
+      if (filtered.length > 0) return filtered;
+    }
+    return posts;
+  }
+
   async function waitForContent(maxWait = 15000) {
     const start = Date.now();
     while (Date.now() - start < maxWait) {
-      // Look for post containers on the activity page
-      const posts = document.querySelectorAll(
-        'div[data-urn^="urn:li:activity"], div[data-urn^="urn:li:ugcPost"], ' +
-        '[class*="profile-creator-shared-feed-update"], ' +
-        '[data-testid="main-feed-activity-card"]'
-      );
+      const posts = queryPosts();
       if (posts.length > 0) return posts;
       await delay(1000);
     }
-    return document.querySelectorAll(
-      'div[data-urn^="urn:li:activity"], div[data-urn^="urn:li:ugcPost"], ' +
-      '[class*="profile-creator-shared-feed-update"], ' +
-      '[data-testid="main-feed-activity-card"]'
-    );
+    return queryPosts();
   }
 
   // ── Scroll to load more posts ───────────────────────────────────────────
@@ -57,11 +75,7 @@
     let lastCount = 0;
     let staleRounds = 0;
     for (let i = 0; i < maxScrolls; i++) {
-      const posts = document.querySelectorAll(
-        'div[data-urn^="urn:li:activity"], div[data-urn^="urn:li:ugcPost"], ' +
-        '[class*="profile-creator-shared-feed-update"], ' +
-        '[data-testid="main-feed-activity-card"]'
-      );
+      const posts = queryPosts();
       if (posts.length >= targetCount) break;
       if (posts.length === lastCount) {
         staleRounds++;
@@ -244,106 +258,216 @@
     return null;
   }
 
-  function findCommentInput(postEl) {
-    // Wait for the comment composer to appear
-    const inputs = postEl.querySelectorAll('[role="textbox"][contenteditable="true"]');
-    if (inputs.length > 0) return inputs[inputs.length - 1]; // last = newest
-    // Broader search
-    const composerAreas = postEl.querySelectorAll(
-      '[class*="comment-compose"] [contenteditable="true"], ' +
-      '[class*="comments-comment-box"] [contenteditable="true"], ' +
-      '.ql-editor[contenteditable="true"]'
-    );
-    if (composerAreas.length > 0) return composerAreas[composerAreas.length - 1];
+  function findCommentInput(postEl, commentBtn) {
+    // Search inside postEl, then ancestors up to 3 levels
+    const searchRoots = [postEl];
+    let ancestor = postEl.parentElement;
+    for (let lvl = 0; lvl < 3 && ancestor; lvl++) {
+      searchRoots.push(ancestor);
+      ancestor = ancestor.parentElement;
+    }
+
+    for (const root of searchRoots) {
+      const inputs = root.querySelectorAll(
+        '[role="textbox"][contenteditable="true"], ' +
+        '[role="textbox"][contenteditable="plaintext-only"], ' +
+        'div[contenteditable="true"], ' +
+        '[class*="comment-compose"] [contenteditable="true"], ' +
+        '[class*="comments-comment-box"] [contenteditable="true"], ' +
+        '.ql-editor[contenteditable="true"]'
+      );
+      if (inputs.length > 0) return inputs[inputs.length - 1];
+    }
+
+    // Check document.activeElement (clicking Comment may have focused the input)
+    if (document.activeElement) {
+      const active = document.activeElement;
+      const ce = active.getAttribute?.('contenteditable');
+      if (ce === 'true' || ce === 'plaintext-only') return active;
+    }
+
+    // Broad document scan: find the most recently visible contenteditable
+    // that appeared near the comment button's viewport position
+    if (commentBtn) {
+      const allEditable = document.querySelectorAll(
+        '[role="textbox"][contenteditable], div[contenteditable="true"], div[contenteditable="plaintext-only"]'
+      );
+      if (allEditable.length > 0) {
+        const btnRect = commentBtn.getBoundingClientRect();
+        let bestDist = Infinity;
+        let best = null;
+        for (const el of allEditable) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue;
+          const dist = Math.abs(rect.top - btnRect.bottom);
+          if (dist < bestDist) { bestDist = dist; best = el; }
+        }
+        if (bestDist <= 500) return best;
+      }
+    }
+
     return null;
   }
 
   async function typeText(input, text) {
     input.focus();
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    await delay(300);
+
+    // Clear existing content
+    if (input.hasAttribute('contenteditable')) {
+      document.execCommand('selectAll', false, null);
+      document.execCommand('delete', false, null);
+    } else {
+      input.innerHTML = '';
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+    }
     await delay(200);
 
-    // Clear any existing content
-    input.innerHTML = '';
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    await delay(100);
-
-    // Type character by character
+    // Type character by character with full keystroke simulation
     for (const char of text) {
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true, cancelable: true }));
+      input.dispatchEvent(new KeyboardEvent('keypress', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true, cancelable: true }));
       document.execCommand('insertText', false, char);
-      await delay(randomDelay(40, 120));
+      input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: char }));
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: char }));
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: char, code: 'Key' + char.toUpperCase(), bubbles: true }));
+      await delay(randomDelay(50, 150));
     }
 
-    // Fire final events
-    input.dispatchEvent(new Event('input', { bubbles: true }));
+    // Post-typing events so LinkedIn's framework picks up the change
+    input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: text }));
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
     input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: text }));
     await delay(300);
   }
 
+  const SUBMIT_LABELS = ['post', 'post comment', 'submit comment', 'reply',
+    'publicar', 'comentar', 'responder', 'comment',
+    'опубликовать', 'ответить', 'комментировать'];
+
+  function isSubmitButton(btn) {
+    const text = (btn.textContent || '').trim().toLowerCase();
+    const label = (btn.getAttribute('aria-label') || '').toLowerCase();
+    return SUBMIT_LABELS.includes(text) || SUBMIT_LABELS.includes(label) ||
+           label.includes('post a comment');
+  }
+
   function findSubmitButton(postEl) {
-    const btns = postEl.querySelectorAll('button, [role="button"]');
-    for (const b of btns) {
-      const label = (b.getAttribute('aria-label') || '').toLowerCase();
-      const text = (b.textContent || '').toLowerCase().trim();
-      if (label.includes('post comment') || label.includes('submit') ||
-          text === 'post' || text === 'publicar' || text === 'опубликовать' ||
-          text === 'post comment' || text === 'submit') {
-        if (!b.disabled && b.getAttribute('aria-disabled') !== 'true') return b;
+    function searchIn(root) {
+      const btns = root.querySelectorAll('button');
+      for (const btn of btns) {
+        if (isSubmitButton(btn)) return btn;
+      }
+      return null;
+    }
+
+    // Strategy 1: Walk up from the contenteditable input
+    const input = postEl.querySelector(
+      '[role="textbox"][contenteditable="true"], div[contenteditable="true"], textarea'
+    );
+    if (input) {
+      let parent = input.parentElement;
+      for (let depth = 0; depth < 8 && parent && parent !== postEl; depth++) {
+        const btn = searchIn(parent);
+        if (btn) return btn;
+        parent = parent.parentElement;
       }
     }
+
+    // Strategy 2: Look inside comment composer area
+    const composer = postEl.querySelector(
+      '[class*="comments-comment-box"], [class*="comment-compose"], [class*="comments-comment-texteditor"]'
+    );
+    if (composer) {
+      const btn = searchIn(composer);
+      if (btn) return btn;
+    }
+
+    // Strategy 3: Search the full post element
+    const btn = searchIn(postEl);
+    if (btn) return btn;
+
+    // Strategy 4: Look in modal/dialog
+    const modal = document.querySelector('[role="dialog"], .artdeco-modal');
+    if (modal) {
+      const modalBtn = searchIn(modal);
+      if (modalBtn) return modalBtn;
+    }
+
     return null;
   }
 
   async function commentOnPost(postEl, commentText) {
     // 1. Click comment button to open composer
-    const commentBtn = findCommentButton(postEl);
+    let commentBtn = findCommentButton(postEl);
+    if (!commentBtn && postEl.parentElement) {
+      commentBtn = findCommentButton(postEl.parentElement);
+    }
     if (!commentBtn) { WARN('No comment button found'); return false; }
     commentBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
     await delay(randomDelay(300, 600));
     commentBtn.click();
     await delay(randomDelay(1500, 2500));
 
-    // 2. Find the comment input
+    // 2. Find the comment input with retries
     let input = null;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      input = findCommentInput(postEl);
+    for (let attempt = 0; attempt < 8; attempt++) {
+      input = findCommentInput(postEl, commentBtn);
       if (input) break;
-      await delay(800);
-    }
-    if (!input) {
-      // Try broader search (comment composer might be outside post element)
-      input = document.querySelector(
-        '[role="textbox"][contenteditable="true"][aria-label*="comment" i], ' +
-        '[role="textbox"][contenteditable="true"][aria-label*="коммент" i]'
-      );
+      // After 2 failed attempts, re-click comment button (toggle issue)
+      if (attempt === 2) {
+        LOG('Re-clicking comment button...');
+        commentBtn.click();
+        await delay(randomDelay(1500, 2500));
+      } else {
+        await delay(1000);
+      }
     }
     if (!input) { WARN('No comment input found'); return false; }
 
     // 3. Type the comment
     await typeText(input, commentText);
+    await delay(randomDelay(800, 1500));
 
-    // 4. Find and click submit
-    await delay(randomDelay(500, 1000));
+    // 4. Find submit button and wait for it to become enabled
     let submitBtn = null;
-    for (let attempt = 0; attempt < 8; attempt++) {
+    let submitReady = false;
+    for (let attempt = 0; attempt < 10; attempt++) {
       submitBtn = findSubmitButton(postEl);
-      if (!submitBtn) {
-        // Search near the input
-        let ancestor = input;
-        for (let up = 0; up < 8 && ancestor; up++) {
-          ancestor = ancestor.parentElement;
-          if (ancestor) {
-            const btn = findSubmitButton(ancestor);
-            if (btn) { submitBtn = btn; break; }
-          }
+      if (submitBtn) {
+        const isDisabled = submitBtn.disabled || submitBtn.hasAttribute('disabled');
+        const isAriaDisabled = submitBtn.getAttribute('aria-disabled') === 'true';
+        if (!isDisabled && !isAriaDisabled) {
+          submitReady = true;
+          break;
         }
+        // Button disabled — nudge LinkedIn's editor by typing and deleting a space
+        input.focus();
+        document.execCommand('insertText', false, ' ');
+        await delay(100);
+        document.execCommand('delete', false, null);
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward' }));
+        await delay(100);
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: commentText }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
       }
-      if (submitBtn) break;
-      await delay(500);
+      await delay(600);
     }
 
-    if (!submitBtn) { WARN('No submit button found'); return false; }
+    if (!submitReady) { WARN('No submit button found'); return false; }
 
-    submitBtn.click();
+    // 5. Click submit with full pointer + mouse event sequence
+    submitBtn.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    await delay(200);
+    submitBtn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
+    submitBtn.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    await delay(50);
+    submitBtn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true }));
+    submitBtn.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+    submitBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    submitBtn.click(); // fallback native click
     await delay(randomDelay(1000, 2000));
     LOG('Comment posted');
     return true;
@@ -389,11 +513,7 @@
 
     // 2. Scroll to load more
     await scrollToLoadPosts(15, 6);
-    postEls = document.querySelectorAll(
-      'div[data-urn^="urn:li:activity"], div[data-urn^="urn:li:ugcPost"], ' +
-      '[class*="profile-creator-shared-feed-update"], ' +
-      '[data-testid="main-feed-activity-card"]'
-    );
+    postEls = queryPosts();
     LOG(`After scrolling: ${postEls.length} posts`);
 
     // 3. Parse and filter to this week's posts

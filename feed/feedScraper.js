@@ -26,6 +26,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       'div[data-urn^="urn:li:aggregate"]',
       '.feed-shared-update-v2',
       '[data-id][class*="feed"]',
+      '[data-id][class*="update"]',
+      '[data-testid="main-feed-activity-card"]',
     ],
     // Child-element selector strategies (fallback — find a child then walk up)
     SELECTOR_STRATEGIES: [
@@ -40,6 +42,9 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       { name: 'feed-text', selector: '.feed-shared-text' },
       { name: 'break-words', selector: '.break-words' },
       { name: 'update-text', selector: '.update-components-text' },
+      { name: 'actor-name', selector: '[data-testid="actor-name"]' },
+      { name: 'like-button', selector: 'button[aria-label*="like" i], button[aria-label*="reaction" i]' },
+      { name: 'comment-button', selector: 'button[aria-label*="comment" i]' },
     ],
     // Scraping limits
     MAX_SCROLL_COUNT: 10,
@@ -289,6 +294,14 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       () => document.querySelector('[role="main"]'),
       () => document.querySelector('.feed-container'),
       () => document.querySelector('.core-rail'),
+      // Newer LinkedIn layouts
+      () => document.querySelector('[data-testid="main-feed"]'),
+      () => document.querySelector('div.scaffold-layout__content'),
+      // Fallback: any element containing data-urn posts
+      () => {
+        const post = document.querySelector('div[data-urn^="urn:li:activity"], div[data-urn^="urn:li:ugcPost"]');
+        return post?.closest('[role="main"]') || post?.parentElement?.parentElement || null;
+      },
     ];
 
     for (const strategy of strategies) {
@@ -432,6 +445,25 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       }
     } catch (err) {
       console.warn('[FeedScraper] Heuristic strategy failed:', err.message);
+    }
+
+    // Strategy 4: Deep heuristic — look 2 levels deep for post-like containers
+    try {
+      const candidates = safeQuerySelectorAll(feed, ':scope > div > div');
+      const posts = candidates.filter(el => {
+        const hasLinks = el.querySelectorAll('a[href]').length >= 2;
+        const hasButtons = el.querySelectorAll('button').length >= 1;
+        const hasText = (el.innerText || '').length > 50;
+        // Must also be reasonably tall (real posts are >100px)
+        const rect = el.getBoundingClientRect();
+        return hasLinks && hasButtons && hasText && rect.height > 100;
+      });
+      if (posts.length > 0) {
+        console.log(`[FeedScraper] Found ${posts.length} posts via deep heuristic (grandchildren)`);
+        return posts;
+      }
+    } catch (err) {
+      console.warn('[FeedScraper] Deep heuristic strategy failed:', err.message);
     }
 
     console.warn('[FeedScraper] No posts found with any strategy');

@@ -323,7 +323,7 @@ async function runProfileVisits() {
     const totalCommented = allResults.reduce((s, r) => s + (r.commented || 0), 0);
     chrome.notifications.create(`profile-visits-${Date.now()}`, {
       type: 'basic',
-      iconUrl: 'icon48.png',
+      iconUrl: chrome.runtime.getURL('icon48.png'),
       title: 'Influencer Profile Visits Complete',
       message: `Visited ${list.length} profiles: ${totalLiked} likes, ${totalCommented} comments`,
       priority: 1,
@@ -469,7 +469,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Send notification
     chrome.notifications.create({
       type: 'basic',
-      iconUrl: 'icon48.png',
+      iconUrl: chrome.runtime.getURL('icon48.png'),
       title: "LinkedIn Auto Apply",
       message: `Application sent successfully! Total applications: ${stats.totalApplied}`,
       priority: 2,
@@ -495,7 +495,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log("Feed analysis complete:", message.summary);
     chrome.notifications.create({
       type: 'basic',
-      iconUrl: 'icon48.png',
+      iconUrl: chrome.runtime.getURL('icon48.png'),
       title: "LinkedIn Feed Analysis",
       message: `Scanned ${message.summary.totalPosts} posts. Found ${message.summary.hiringPostsCount} hiring posts, ${message.summary.keywordMatchCount} keyword matches.`,
       priority: 1,
@@ -505,7 +505,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     console.log("Feed engagement complete:", message.stats);
     chrome.notifications.create({
       type: 'basic',
-      iconUrl: 'icon48.png',
+      iconUrl: chrome.runtime.getURL('icon48.png'),
       title: "LinkedIn Feed Engagement",
       message: `Liked ${message.stats.liked} posts, skipped ${message.stats.skipped}.`,
       priority: 1,
@@ -532,7 +532,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const p = newPosts[0];
         chrome.notifications.create(`inf-tier1-${Date.now()}`, {
           type: 'basic',
-          iconUrl: 'icon48.png',
+          iconUrl: chrome.runtime.getURL('icon48.png'),
           title: `New post from ${p.influencerName}`,
           message: p.contentSnippet || `${p.author} posted on LinkedIn`,
           priority: 2,
@@ -541,7 +541,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const names = [...new Set(newPosts.map(p => p.influencerName))].join(', ');
         chrome.notifications.create(`inf-tier1-${Date.now()}`, {
           type: 'basic',
-          iconUrl: 'icon48.png',
+          iconUrl: chrome.runtime.getURL('icon48.png'),
           title: `${newPosts.length} new Tier-1 influencer posts`,
           message: `From: ${names}`,
           priority: 2,
