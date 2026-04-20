@@ -665,9 +665,9 @@
 
       // Scroll post into view
       post._el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await delay(randomDelay(1000, 2000));
+      await delay(randomDelay(2000, 3000));
 
-      // Like
+      // ── Like ──
       try {
         const liked = await likePost(post._el);
         postResult.liked = liked;
@@ -677,9 +677,12 @@
         results.errors++;
       }
 
-      await delay(randomDelay(2000, 4000));
+      // Cooldown between like and comment (human-like pause)
+      const likeToCommentCooldown = randomDelay(8000, 12000);
+      LOG(`Waiting ${Math.round(likeToCommentCooldown / 1000)}s before commenting...`);
+      await delay(likeToCommentCooldown);
 
-      // Generate AI comment and post it
+      // ── Comment ──
       try {
         const comment = await requestAIComment(post);
         if (comment) {
@@ -701,8 +704,12 @@
       }
       results.posts.push(postResult);
 
-      // Human-like delay between posts
-      await delay(randomDelay(5000, 12000));
+      // ── Cooldown between posts: 20-30 seconds ──
+      if (weeklyPosts.indexOf(post) < weeklyPosts.length - 1) {
+        const cooldown = randomDelay(20000, 30000);
+        LOG(`Post cooldown: ${Math.round(cooldown / 1000)}s before next post...`);
+        await delay(cooldown);
+      }
     }
 
     // 6. Persist engaged IDs (keep last 500)
