@@ -616,12 +616,20 @@
     const weeklyPosts = allPosts.filter(p => isThisWeek(p.timestamp));
     LOG(`This week's posts: ${weeklyPosts.length} / ${allPosts.length} total`);
 
-    // 4. Load already-seen post IDs from state
-    let seenPostIds = new Set();
+    // 4. Load already-engaged post IDs from state
+    // Only posts where like OR comment actually succeeded are stored here.
+    // Previous versions marked posts as "seen" even when engagement failed
+    // (e.g. background tab throttling), so we clear stale data on first run.
+    let engagedPostIds = new Set();
     try {
-      const data = await chrome.storage.local.get('profileVisitorSeen');
-      const arr = data?.profileVisitorSeen || [];
-      seenPostIds = new Set(arr);
+      const data = await chrome.storage.local.get(['profileVisitorEngaged', 'profileVisitorSeen']);
+      if (data?.profileVisitorEngaged) {
+        engagedPostIds = new Set(data.profileVisitorEngaged);
+      } else if (data?.profileVisitorSeen) {
+        // Migration: old "seen" key is unreliable — discard it
+        LOG('Clearing stale profileVisitorSeen data (engagement was broken)');
+        await chrome.storage.local.remove('profileVisitorSeen');
+      }
     } catch {}
 
     const results = {
@@ -639,8 +647,8 @@
     for (const post of weeklyPosts) {
       const postResult = { id: post.id, author: post.author, liked: false, commented: false, skipped: false };
 
-      if (seenPostIds.has(post.id)) {
-        LOG(`Skipping already-seen post: ${post.id}`);
+      if (engagedPostIds.has(post.id)) {
+        LOG(`Skipping already-engaged post: ${post.id}`);
         postResult.skipped = true;
         results.skipped++;
         results.posts.push(postResult);
@@ -679,18 +687,20 @@
         results.errors++;
       }
 
-      // Mark as seen
-      seenPostIds.add(post.id);
+      // Only mark as engaged if like OR comment actually succeeded
+      if (postResult.liked || postResult.commented) {
+        engagedPostIds.add(post.id);
+      }
       results.posts.push(postResult);
 
       // Human-like delay between posts
       await delay(randomDelay(5000, 12000));
     }
 
-    // 6. Persist seen IDs (keep last 500)
+    // 6. Persist engaged IDs (keep last 500)
     try {
-      const arr = [...seenPostIds].slice(-500);
-      await chrome.storage.local.set({ profileVisitorSeen: arr });
+      const arr = [...engagedPostIds].slice(-500);
+      await chrome.storage.local.set({ profileVisitorEngaged: arr });
     } catch {}
 
     // 7. Report results
