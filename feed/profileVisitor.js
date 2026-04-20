@@ -631,8 +631,13 @@
     };
 
     // 5. Engage with each weekly post: LIKE then COMMENT, 20-30s cooldown
-    for (let idx = 0; idx < weeklyPosts.length; idx++) {
-      const post = weeklyPosts[idx];
+    //    Max 5 posts per profile to stay within timeout and avoid spam detection
+    const MAX_POSTS_PER_VISIT = 5;
+    const postsToEngage = weeklyPosts.slice(0, MAX_POSTS_PER_VISIT);
+    LOG(`Will engage with up to ${postsToEngage.length} posts (max ${MAX_POSTS_PER_VISIT})`);
+
+    for (let idx = 0; idx < postsToEngage.length; idx++) {
+      const post = postsToEngage[idx];
       const postResult = { id: post.id, author: post.author, liked: false, commented: false, skipped: false };
 
       if (engagedPostIds.has(post.id)) {
@@ -685,7 +690,7 @@
       results.posts.push(postResult);
 
       // ── 20-30s COOLDOWN before next post ──
-      if (idx < weeklyPosts.length - 1) {
+      if (idx < postsToEngage.length - 1) {
         const cooldown = randomDelay(20000, 30000);
         LOG(`Cooldown: ${Math.round(cooldown / 1000)}s before next post...`);
         await delay(cooldown);

@@ -344,7 +344,7 @@ async function visitSingleProfile(url, influencer) {
     let tabId = null;
     let timeoutId = null;
     let onTabRemoved = null;
-    const MAX_VISIT_MS = 5 * 60 * 1000; // 5 min max per profile
+    const MAX_VISIT_MS = 15 * 60 * 1000; // 15 min max per profile
 
     function cleanup() {
       clearTimeout(timeoutId);
@@ -366,7 +366,7 @@ async function visitSingleProfile(url, influencer) {
       cleanup();
       _profileVisitResolve = null;
       if (tabId) chrome.tabs.remove(tabId).catch(() => {});
-      reject(new Error('Profile visit timed out (5 min)'));
+      reject(new Error('Profile visit timed out (15 min)'));
     }, MAX_VISIT_MS);
 
     try {
