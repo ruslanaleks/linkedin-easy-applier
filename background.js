@@ -417,11 +417,17 @@ async function visitSingleProfile(url, influencer) {
       // Extra wait for LinkedIn SPA to render
       await new Promise(r => setTimeout(r, 3000));
 
+      // Verify tab is still on the expected URL
+      const tabInfo = await chrome.tabs.get(tabId);
+      console.log(`[Background] Tab loaded: ${tabInfo.url} (status: ${tabInfo.status})`);
+
       // Inject the profile visitor script
+      console.log(`[Background] Injecting profileVisitor.js into tab ${tabId}...`);
       await chrome.scripting.executeScript({
         target: { tabId },
         files: ['feed/profileVisitor.js'],
       });
+      console.log(`[Background] profileVisitor.js injected successfully`);
 
       // Now we wait for profileVisitorComplete message (handled above)
     } catch (err) {

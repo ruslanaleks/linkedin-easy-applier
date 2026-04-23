@@ -3313,6 +3313,13 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     enableDayKeywords = false,
     dayKeywords = {},
     actionCooldownSec = CONFIG.DEFAULT_ACTION_COOLDOWN_SEC,
+    minReactions = 10,
+    maxPostAgeHours = 48,
+    skipReposts = true,
+    skipVacancies = true,
+    targetHeadlines = '',
+    authorBlacklist = '',
+    contentBlacklist = '',
     onProgress = null,
   } = {}) {
     // Resolve today's day-of-week keywords
@@ -3332,6 +3339,17 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       }
     }
 
+    // Parse targeting filter lists once (before the post loop)
+    const _targetHeadlinesList = targetHeadlines
+      ? targetHeadlines.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+      : [];
+    const _authorBlacklistSet = authorBlacklist
+      ? new Set(authorBlacklist.split(',').map(s => s.trim().toLowerCase()).filter(Boolean))
+      : new Set();
+    const _contentBlacklistList = contentBlacklist
+      ? contentBlacklist.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+      : [];
+
     console.log('[FeedEngagement] autoEngage called with settings:', {
       likeAll,
       likeHiring,
@@ -3348,12 +3366,24 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       enableDayKeywords,
       todayKeywords,
       actionCooldownSec,
+      minReactions,
+      maxPostAgeHours,
+      skipReposts,
+      skipVacancies,
+      targetHeadlines: _targetHeadlinesList.length,
+      authorBlacklist: _authorBlacklistSet.size,
+      contentBlacklist: _contentBlacklistList.length,
       commentProbability: CONFIG.ENGAGEMENT_PROBABILITY.comment,
       replyProbability: CONFIG.ENGAGEMENT_PROBABILITY.reply,
     });
 
     if (isEngaging) {
       console.log('[FeedEngagement] Already engaging, please wait...');
+      return sessionStats;
+    }
+
+    if (window.linkedInAutoApply.autoLike?.isRunning?.()) {
+      console.log('[FeedEngagement] Auto Like is running, cannot start autoEngage');
       return sessionStats;
     }
 
@@ -3442,12 +3472,34 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         if (post.author && isSelfName(post.author)) { processedElements.add(postEl); sessionStats.skipped++; continue; }
         if (post.id && engagedPostIds.has(post.id)) { processedElements.add(postEl); sessionStats.skipped++; continue; }
         if (isAlreadyLiked(postEl)) { processedElements.add(postEl); sessionStats.skipped++; continue; }
-        if ((post.reactions || 0) < 10) { processedElements.add(postEl); sessionStats.skipped++; continue; }
+        if ((post.reactions || 0) < minReactions) { processedElements.add(postEl); sessionStats.skipped++; continue; }
 
         const ageHours = parseTimestampToHours(post.timestamp);
-        if (ageHours !== null && ageHours > 48) { processedElements.add(postEl); sessionStats.skipped++; continue; }
-        if (isRepost(postEl)) { processedElements.add(postEl); sessionStats.skipped++; continue; }
-        if (isVacancy(post)) { processedElements.add(postEl); sessionStats.skipped++; continue; }
+        if (ageHours !== null && ageHours > maxPostAgeHours) { processedElements.add(postEl); sessionStats.skipped++; continue; }
+        if (skipReposts && isRepost(postEl)) { processedElements.add(postEl); sessionStats.skipped++; continue; }
+        if (skipVacancies && isVacancy(post)) { processedElements.add(postEl); sessionStats.skipped++; continue; }
+
+        // Author blacklist
+        if (_authorBlacklistSet.size > 0 && post.author) {
+          const authorLower = post.author.toLowerCase().trim();
+          if (_authorBlacklistSet.has(authorLower)) { processedElements.add(postEl); sessionStats.skipped++; continue; }
+        }
+
+        // Author headline/role targeting (whitelist)
+        if (_targetHeadlinesList.length > 0) {
+          const headlineLower = (post.headline || '').toLowerCase();
+          if (!_targetHeadlinesList.some(kw => headlineLower.includes(kw))) {
+            processedElements.add(postEl); sessionStats.skipped++; continue;
+          }
+        }
+
+        // Content blacklist
+        if (_contentBlacklistList.length > 0) {
+          const contentLower = (post.content || '').toLowerCase();
+          if (_contentBlacklistList.some(kw => contentLower.includes(kw))) {
+            processedElements.add(postEl); sessionStats.skipped++; continue;
+          }
+        }
 
         preFiltered.push({ post, postEl, ageHours });
 
@@ -3953,6 +4005,14 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     // Persistence
     saveDailyStats,
     resetDailyStats,
+
+    // Internal helpers (exposed for autoLike.js reuse)
+    _loadEngagedPostIds: loadEngagedPostIds,
+    _saveEngagedPostIds: saveEngagedPostIds,
+    _parseTimestampToHours: parseTimestampToHours,
+    _isRepost: isRepost,
+    _isVacancy: isVacancy,
+    isEngaging: () => isEngaging,
   };
 
   console.log('[FeedEngagement] Module loaded successfully');

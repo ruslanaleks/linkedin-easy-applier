@@ -54,11 +54,14 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
   function createAllButtons() {
     window.linkedInAutoApply.feedUI.createAnalyzeFeedButton();
     window.linkedInAutoApply.feedUI.createAutoEngageButton();
+    if (window.linkedInAutoApply.autoLike) {
+      window.linkedInAutoApply.feedUI.createAutoLikeButton();
+    }
     window.linkedInAutoApply.feedUI.createSettingsButton();
     window.linkedInAutoApply.feedUI.createWeeklyReportButton();
 
     console.log('[FeedContent] Feed analyzer ready. Buttons created:');
-    console.log('  - Analyze Feed | Auto Engage | Feed Settings | Weekly Report');
+    console.log('  - Analyze Feed | Auto Engage | Auto Like | Feed Settings | Weekly Report');
   }
 
   /**
@@ -249,6 +252,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       window.linkedInAutoApply.feedEngagement.stopEngagement();
     }
 
+    // Stop auto-like if running
+    if (window.linkedInAutoApply.autoLike?.isRunning?.()) {
+      window.linkedInAutoApply.autoLike.stop();
+    }
+
     // Persist cache
     if (window.linkedInAutoApply.feed) {
       window.linkedInAutoApply.feed.persistCache();
@@ -257,6 +265,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     // Remove UI buttons
     document.getElementById('linkedin-feed-analyze-btn')?.remove();
     document.getElementById('linkedin-feed-engage-btn')?.remove();
+    document.getElementById('linkedin-autolike-btn')?.remove();
+    document.getElementById('autolike-dashboard')?.remove();
     document.getElementById('linkedin-feed-settings-btn')?.remove();
     document.getElementById('linkedin-feed-report-btn')?.remove();
   }

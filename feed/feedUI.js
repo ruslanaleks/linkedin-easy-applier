@@ -337,6 +337,215 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
   }
 
   /**
+   * Create the "Auto Like" button
+   */
+  function createAutoLikeButton() {
+    const existing = document.getElementById('linkedin-autolike-btn');
+    if (existing) existing.remove();
+
+    const button = document.createElement('button');
+    button.id = 'linkedin-autolike-btn';
+    button.innerText = '👍 Auto Like';
+    button.style.cssText = `${STYLES.button}
+      bottom: 120px; right: 20px;
+      background-color: #e91e63; color: #fff;
+    `;
+
+    button.addEventListener('mouseenter', () => {
+      button.style.backgroundColor = '#c2185b';
+      button.style.transform = 'scale(1.05)';
+    });
+    button.addEventListener('mouseleave', () => {
+      if (!autoLikeRunning) {
+        button.style.backgroundColor = '#e91e63';
+      }
+      button.style.transform = 'scale(1)';
+    });
+    button.addEventListener('click', toggleAutoLike);
+
+    document.body.appendChild(button);
+    return button;
+  }
+
+  let autoLikeRunning = false;
+
+  async function toggleAutoLike() {
+    const btn = document.getElementById('linkedin-autolike-btn');
+    if (!btn) return;
+
+    if (autoLikeRunning) {
+      window.linkedInAutoApply.autoLike.stop();
+      autoLikeRunning = false;
+      btn.innerText = '👍 Auto Like';
+      btn.style.backgroundColor = '#e91e63';
+      hideAutoLikeDashboard();
+      return;
+    }
+
+    // Mutual exclusion
+    if (engagementRunning) {
+      alert('Auto Engage is currently running. Stop it before starting Auto Like.');
+      return;
+    }
+
+    autoLikeRunning = true;
+    btn.innerText = '⏹️ Stop Likes';
+    btn.style.backgroundColor = '#c62828';
+
+    showAutoLikeDashboard();
+
+    // Wire up status callback
+    window.linkedInAutoApply.autoLike.onStatusChange = (st, message) => {
+      updateAutoLikeDashboard(st, message);
+
+      if (st.status === 'idle' || st.status === 'security_stop' || st.status === 'daily_limit') {
+        autoLikeRunning = false;
+        btn.innerText = '👍 Auto Like';
+        btn.style.backgroundColor = '#e91e63';
+      }
+    };
+
+    const settings = await getEngagementSettings();
+
+    try {
+      await window.linkedInAutoApply.autoLike.start({
+        minReactions: settings.minReactions ?? 10,
+        maxPostAgeHours: settings.maxPostAgeHours ?? 48,
+        skipReposts: settings.skipReposts ?? true,
+        skipVacancies: settings.skipVacancies ?? true,
+        targetHeadlines: settings.targetHeadlines || '',
+        authorBlacklist: settings.authorBlacklist || '',
+        contentBlacklist: settings.contentBlacklist || '',
+      });
+    } catch (err) {
+      console.error('[FeedUI] Auto Like error:', err.message);
+      if (err.message && !err.message.includes('Aborted')) {
+        alert('Auto Like: ' + err.message);
+      }
+    }
+
+    autoLikeRunning = false;
+    btn.innerText = '👍 Auto Like';
+    btn.style.backgroundColor = '#e91e63';
+    hideAutoLikeDashboard();
+  }
+
+  function showAutoLikeDashboard() {
+    hideAutoLikeDashboard();
+
+    const panel = document.createElement('div');
+    panel.id = 'autolike-dashboard';
+    panel.style.cssText = `
+      position: fixed; top: 70px; right: 20px;
+      width: 280px; background: #fff; border-radius: 10px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+      z-index: 10000; font-family: -apple-system, system-ui, sans-serif;
+      overflow: hidden;
+    `;
+
+    const autoLikeState = window.linkedInAutoApply.autoLike?.getState?.() || {};
+    const dailyLimit = autoLikeState.dailyLimit || 65;
+
+    panel.innerHTML = `
+      <div style="background: linear-gradient(135deg, #e91e63, #c2185b); color: #fff;
+                  padding: 12px 16px; font-weight: 700; font-size: 14px;
+                  display: flex; justify-content: space-between; align-items: center;">
+        <span>Auto Like</span>
+        <span id="autolike-status-badge" style="
+          background: rgba(255,255,255,0.2); padding: 2px 8px; border-radius: 10px;
+          font-size: 11px; font-weight: 600;">STARTING</span>
+      </div>
+      <div style="padding: 14px 16px;">
+        <div style="margin-bottom: 12px;">
+          <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666; margin-bottom: 4px;">
+            <span>Today</span>
+            <span id="autolike-today-count">${autoLikeState.todayLikes || 0}/${dailyLimit}</span>
+          </div>
+          <div style="width: 100%; height: 6px; background: #e0e0e0; border-radius: 3px;">
+            <div id="autolike-today-bar" style="width: 0%; height: 100%;
+                 background: linear-gradient(90deg, #e91e63, #f06292);
+                 border-radius: 3px; transition: width 0.3s;"></div>
+          </div>
+        </div>
+        <div style="margin-bottom: 12px;">
+          <div style="display: flex; justify-content: space-between; font-size: 12px; color: #666; margin-bottom: 4px;">
+            <span>Session <span id="autolike-session-num">#${autoLikeState.sessionNumber || 0}</span></span>
+            <span id="autolike-session-count">0/25</span>
+          </div>
+          <div style="width: 100%; height: 6px; background: #e0e0e0; border-radius: 3px;">
+            <div id="autolike-session-bar" style="width: 0%; height: 100%;
+                 background: linear-gradient(90deg, #4caf50, #81c784);
+                 border-radius: 3px; transition: width 0.3s;"></div>
+          </div>
+        </div>
+        <div id="autolike-security" style="
+          padding: 6px 10px; background: #e8f5e9; border-radius: 6px;
+          font-size: 12px; color: #2e7d32; margin-bottom: 10px;
+          display: flex; align-items: center; gap: 6px;">
+          <span>&#x2714;</span> <span>Security: OK</span>
+        </div>
+        <div id="autolike-message" style="
+          font-size: 12px; color: #666; min-height: 32px;
+          line-height: 1.4; word-break: break-word;">
+          Starting...
+        </div>
+      </div>
+    `;
+
+    document.body.appendChild(panel);
+  }
+
+  function updateAutoLikeDashboard(st, message) {
+    const badge = document.getElementById('autolike-status-badge');
+    if (badge) {
+      const labels = {
+        idle: 'IDLE', running: 'RUNNING', reading: 'READING',
+        paused: 'PAUSED', mini_break: 'MINI BREAK', big_break: 'BIG BREAK',
+        security_stop: 'SECURITY!', daily_limit: 'DONE',
+      };
+      badge.textContent = labels[st.status] || st.status.toUpperCase();
+      const colors = {
+        running: 'rgba(76,175,80,0.3)', reading: 'rgba(33,150,243,0.3)',
+        mini_break: 'rgba(255,193,7,0.3)', big_break: 'rgba(255,152,0,0.3)',
+        security_stop: '#f44336', daily_limit: 'rgba(76,175,80,0.5)',
+      };
+      badge.style.background = colors[st.status] || 'rgba(255,255,255,0.2)';
+    }
+
+    const todayCount = document.getElementById('autolike-today-count');
+    const todayBar = document.getElementById('autolike-today-bar');
+    if (todayCount) todayCount.textContent = `${st.todayLikes}/${st.dailyLimit}`;
+    if (todayBar) todayBar.style.width = `${Math.min(100, (st.todayLikes / st.dailyLimit) * 100)}%`;
+
+    const sessionNum = document.getElementById('autolike-session-num');
+    const sessionCount = document.getElementById('autolike-session-count');
+    const sessionBar = document.getElementById('autolike-session-bar');
+    if (sessionNum) sessionNum.textContent = `#${st.sessionNumber}`;
+    if (sessionCount) sessionCount.textContent = `${st.sessionLikes}/25`;
+    if (sessionBar) sessionBar.style.width = `${Math.min(100, (st.sessionLikes / 25) * 100)}%`;
+
+    const secEl = document.getElementById('autolike-security');
+    if (secEl) {
+      if (st.securityDetected) {
+        secEl.style.background = '#ffebee';
+        secEl.style.color = '#c62828';
+        secEl.innerHTML = `<span>&#x26A0;</span> <span>${escapeHtml(st.securityDetected)}</span>`;
+      } else {
+        secEl.style.background = '#e8f5e9';
+        secEl.style.color = '#2e7d32';
+        secEl.innerHTML = '<span>&#x2714;</span> <span>Security: OK</span>';
+      }
+    }
+
+    const msgEl = document.getElementById('autolike-message');
+    if (msgEl && message) msgEl.textContent = message;
+  }
+
+  function hideAutoLikeDashboard() {
+    document.getElementById('autolike-dashboard')?.remove();
+  }
+
+  /**
    * Create the "Feed Settings" button
    */
   function createSettingsButton() {
@@ -348,7 +557,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     button.id = 'linkedin-feed-settings-btn';
     button.innerText = '⚙️ Feed Settings';
     button.style.cssText = `${STYLES.button}
-      bottom: 120px; right: 20px;
+      bottom: 170px; right: 20px;
       background-color: #5f6368; color: #fff;
     `;
 
@@ -377,7 +586,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     button.id = 'linkedin-feed-report-btn';
     button.innerText = 'Weekly Report';
     button.style.cssText = `${STYLES.button}
-      bottom: 170px; right: 20px;
+      bottom: 220px; right: 20px;
       background-color: #e65100; color: #fff;
     `;
 
@@ -572,6 +781,13 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         enableDayKeywords: settings.enableDayKeywords,
         dayKeywords: settings.dayKeywords,
         actionCooldownSec: settings.actionCooldownSec || 60,
+        minReactions: settings.minReactions ?? 10,
+        maxPostAgeHours: settings.maxPostAgeHours ?? 48,
+        skipReposts: settings.skipReposts ?? true,
+        skipVacancies: settings.skipVacancies ?? true,
+        targetHeadlines: settings.targetHeadlines || '',
+        authorBlacklist: settings.authorBlacklist || '',
+        contentBlacklist: settings.contentBlacklist || '',
         onProgress: (progress) => {
           if (progress.phase === 'scraping') {
             updateProgress(
@@ -676,6 +892,14 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         5: ['AI ROI', 'payment compliance', 'PCI DSS', 'engineering culture'],         // Friday
         6: [],  // Saturday
       },
+      // Targeting filters
+      minReactions: 10,
+      maxPostAgeHours: 48,
+      skipReposts: true,
+      skipVacancies: true,
+      targetHeadlines: '',
+      authorBlacklist: '',
+      contentBlacklist: '',
     };
 
     try {
@@ -1128,6 +1352,71 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           `;
         }).join('')}
       </div>
+
+      <h3 style="margin: 22px 0 14px 0; color: #333; font-size: 17px;">Targeting Filters</h3>
+      <div style="padding: 14px; background: #e8f4fd; border-radius: 6px; margin-bottom: 16px; font-size: 14px; line-height: 1.6;">
+        Control which posts pass pre-filtering before scoring. These run first for fast rejection.
+      </div>
+
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        Min reactions:
+        <input type="number" id="setting-min-reactions" value="${settings.minReactions}"
+          min="0" max="1000" style="margin-left: 10px; padding: 6px 10px; width: 80px; font-size: 15px;">
+        <span style="font-size: 12px; color: #888; display: block; margin-top: 4px;">
+          Posts with fewer reactions are skipped (default: 10)
+        </span>
+      </label>
+
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        Max post age (hours):
+        <input type="number" id="setting-max-post-age" value="${settings.maxPostAgeHours}"
+          min="1" max="720" style="margin-left: 10px; padding: 6px 10px; width: 80px; font-size: 15px;">
+        <span style="font-size: 12px; color: #888; display: block; margin-top: 4px;">
+          Posts older than this are skipped (default: 48)
+        </span>
+      </label>
+
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        <input type="checkbox" id="setting-skip-reposts" ${settings.skipReposts ? 'checked' : ''}
+          style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
+        Skip reposted/shared content
+      </label>
+
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        <input type="checkbox" id="setting-skip-vacancies" ${settings.skipVacancies ? 'checked' : ''}
+          style="width: 18px; height: 18px; vertical-align: middle; margin-right: 6px;">
+        Skip vacancy/hiring posts
+      </label>
+
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        Target author headlines:
+        <input type="text" id="setting-target-headlines" value="${escapeHtml(settings.targetHeadlines)}"
+          placeholder="CTO, Founder, VP Engineering, Head of Product"
+          style="display: block; width: 95%; margin-top: 4px; padding: 6px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;">
+        <span style="font-size: 12px; color: #888; display: block; margin-top: 4px;">
+          Only engage posts from authors whose headline contains one of these keywords (comma-separated). Leave empty to engage all.
+        </span>
+      </label>
+
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        Author blacklist:
+        <input type="text" id="setting-author-blacklist" value="${escapeHtml(settings.authorBlacklist)}"
+          placeholder="John Doe, Jane Smith"
+          style="display: block; width: 95%; margin-top: 4px; padding: 6px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;">
+        <span style="font-size: 12px; color: #888; display: block; margin-top: 4px;">
+          Never engage with posts from these authors (comma-separated, full names as shown on LinkedIn)
+        </span>
+      </label>
+
+      <label style="display: block; margin: 12px 0; font-size: 15px; line-height: 1.5;">
+        Content blacklist:
+        <input type="text" id="setting-content-blacklist" value="${escapeHtml(settings.contentBlacklist)}"
+          placeholder="crypto, NFT, dropshipping, MLM"
+          style="display: block; width: 95%; margin-top: 4px; padding: 6px 10px; font-size: 14px; border: 1px solid #ccc; border-radius: 4px;">
+        <span style="font-size: 12px; color: #888; display: block; margin-top: 4px;">
+          Skip posts containing any of these keywords (comma-separated, case-insensitive)
+        </span>
+      </label>
 
       <h3 style="margin: 22px 0 14px 0; color: #333; font-size: 17px;">Session Limits</h3>
 
@@ -1871,6 +2160,13 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       hashtagCategories,
       enableDayKeywords: document.getElementById('setting-enable-day-keywords')?.checked || false,
       dayKeywords,
+      minReactions: parseInt(document.getElementById('setting-min-reactions')?.value || '10', 10),
+      maxPostAgeHours: parseInt(document.getElementById('setting-max-post-age')?.value || '48', 10),
+      skipReposts: document.getElementById('setting-skip-reposts')?.checked || false,
+      skipVacancies: document.getElementById('setting-skip-vacancies')?.checked || false,
+      targetHeadlines: document.getElementById('setting-target-headlines')?.value?.trim() || '',
+      authorBlacklist: document.getElementById('setting-author-blacklist')?.value?.trim() || '',
+      contentBlacklist: document.getElementById('setting-content-blacklist')?.value?.trim() || '',
     };
 
     // Save AI settings
@@ -2568,10 +2864,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
   window.linkedInAutoApply.feedUI = {
     createAnalyzeFeedButton,
     createAutoEngageButton,
+    createAutoLikeButton,
     createSettingsButton,
     createWeeklyReportButton,
     startAnalysis,
     toggleAutoEngage,
+    toggleAutoLike,
     showAnalysisResults,
     showSettingsPanel,
     showQueuePanel,
