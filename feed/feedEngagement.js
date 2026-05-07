@@ -3633,6 +3633,20 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       }
 
       // ════════════════════════════════════════════════════════════════
+      // Send scored posts to server for topic extraction (non-blocking)
+      // ════════════════════════════════════════════════════════════════
+      if (window.linkedInAutoApply.feedAPI?.isAuthenticated()) {
+        for (const item of scoredQueue) {
+          if (item.scoredAction !== 'skip') {
+            window.linkedInAutoApply.feedAPI.queuePostForUpload(
+              item.post,
+              item.scoreResult,
+            );
+          }
+        }
+      }
+
+      // ════════════════════════════════════════════════════════════════
       // Emit scored queue so UI can render the post queue panel
       // ════════════════════════════════════════════════════════════════
       const actionableQueue = scoredQueue.filter(q => q.scoredAction !== 'skip');

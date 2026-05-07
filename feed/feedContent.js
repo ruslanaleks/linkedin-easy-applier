@@ -60,8 +60,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     window.linkedInAutoApply.feedUI.createSettingsButton();
     window.linkedInAutoApply.feedUI.createWeeklyReportButton();
 
+    if (window.linkedInAutoApply.feedTopics) {
+      window.linkedInAutoApply.feedTopics.createTopicsButton();
+    }
+
     console.log('[FeedContent] Feed analyzer ready. Buttons created:');
-    console.log('  - Analyze Feed | Auto Engage | Auto Like | Feed Settings | Weekly Report');
+    console.log('  - Analyze Feed | Auto Engage | Auto Like | Feed Settings | Weekly Report | Topics & Post');
   }
 
   /**
@@ -80,6 +84,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           window.linkedInAutoApply.feedUI.updateBadges();
         }
       }, 30000);
+    }
+
+    // Start batch upload timer for server post collection
+    if (window.linkedInAutoApply.feedAPI) {
+      window.linkedInAutoApply.feedAPI.startBatchUploadTimer();
     }
 
     // Process any deferred influencer checks
@@ -148,6 +157,18 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         if (window.linkedInAutoApply.feedUI?.onProfileVisitsComplete) {
           window.linkedInAutoApply.feedUI.onProfileVisitsComplete(message.results);
         }
+
+      } else if (message.action === 'flushServerPosts') {
+        // Background alarm triggers batch upload
+        if (window.linkedInAutoApply.feedAPI) {
+          window.linkedInAutoApply.feedAPI.flushPosts().then(() => {
+            sendResponse({ flushed: true });
+          }).catch(() => {
+            sendResponse({ flushed: false });
+          });
+          return true; // async
+        }
+        sendResponse({ flushed: false });
 
       } else if (message.action === 'profileVisitStatsUpdate') {
         // Update influencer stats after profile visit engagement
@@ -257,6 +278,12 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       window.linkedInAutoApply.autoLike.stop();
     }
 
+    // Stop batch upload timer and flush remaining posts
+    if (window.linkedInAutoApply.feedAPI) {
+      window.linkedInAutoApply.feedAPI.stopBatchUploadTimer();
+      window.linkedInAutoApply.feedAPI.flushPosts();
+    }
+
     // Persist cache
     if (window.linkedInAutoApply.feed) {
       window.linkedInAutoApply.feed.persistCache();
@@ -269,6 +296,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     document.getElementById('autolike-dashboard')?.remove();
     document.getElementById('linkedin-feed-settings-btn')?.remove();
     document.getElementById('linkedin-feed-report-btn')?.remove();
+    document.getElementById('linkedin-feed-topics-btn')?.remove();
+    document.getElementById('feed-topics-panel')?.remove();
   }
 
   // Initialize

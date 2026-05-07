@@ -216,7 +216,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', async () => {
       const uiSettings = await loadUiSettings();
       if (uiSettings.theme !== 'auto') return;
-      ['feed-settings-panel', 'feed-queue-panel', 'feed-analysis-panel', 'feed-weekly-report-panel'].forEach(id => {
+      ['feed-settings-panel', 'feed-queue-panel', 'feed-analysis-panel', 'feed-weekly-report-panel', 'feed-topics-panel'].forEach(id => {
         const el = document.getElementById(id);
         if (el) applyPanelTheme(el);
       });
@@ -2806,6 +2806,7 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
     if (settingsPanel) settingsPanel.remove();
     document.getElementById('feed-queue-panel')?.remove();
     document.getElementById('feed-weekly-report-panel')?.remove();
+    document.getElementById('feed-topics-panel')?.remove();
     analysisPanel = null;
     currentProgressEl = null;
   }

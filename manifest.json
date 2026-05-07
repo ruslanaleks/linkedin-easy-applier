@@ -13,7 +13,8 @@
     ],
     "host_permissions": [
         "https://api.anthropic.com/*",
-        "https://www.linkedin.com/*"
+        "https://www.linkedin.com/*",
+        "http://localhost:3000/*"
     ],
     "background": {
         "service_worker": "background.js"
@@ -51,6 +52,8 @@
                 "feed/feedScoring.js",
                 "feed/feedMonitor.js",
                 "feed/feedAI.js",
+                "feed/feedAPI.js",
+                "feed/feedTopics.js",
                 "feed/feedUI.js",
                 "feed/feedContent.js"
             ],
@@ -75,6 +78,8 @@
                 "feed/feedScoring.js",
                 "feed/feedMonitor.js",
                 "feed/feedAI.js",
+                "feed/feedAPI.js",
+                "feed/feedTopics.js",
                 "feed/feedUI.js",
                 "feed/feedContent.js",
                 "feed/profileVisitor.js"

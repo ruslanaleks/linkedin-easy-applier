@@ -50,6 +50,10 @@ const PROFILE_VISIT_ALARM = 'influencer-profile-visits';
 const PROFILE_VISIT_INTERVAL_MIN = 240; // 4 hours
 const PROFILE_VISIT_STORAGE_KEY = 'profileVisitLastRun';
 
+// Server batch upload alarm — triggers content script to flush posts
+const SERVER_BATCH_ALARM = 'server-batch-upload';
+const SERVER_BATCH_INTERVAL_MIN = 5; // every 5 minutes
+
 const LINKEDIN_FEED_URLS = [
   'https://www.linkedin.com/feed*',
   'https://www.linkedin.com/',
@@ -136,6 +140,15 @@ async function deferInfluencerCheck(tier) {
 
 // Handle alarm fires
 chrome.alarms.onAlarm.addListener(async (alarm) => {
+  // Server batch upload alarm — trigger content script to flush posts
+  if (alarm.name === SERVER_BATCH_ALARM) {
+    const sent = await sendToLinkedInTab({ action: 'flushServerPosts' });
+    if (!sent) {
+      console.log('[Background] No LinkedIn tab to flush posts to');
+    }
+    return;
+  }
+
   // Profile visit alarm
   if (alarm.name === PROFILE_VISIT_ALARM) {
     console.log('[Background] Profile visit alarm fired');
@@ -344,7 +357,7 @@ async function visitSingleProfile(url, influencer) {
     let tabId = null;
     let timeoutId = null;
     let onTabRemoved = null;
-    const MAX_VISIT_MS = 15 * 60 * 1000; // 15 min max per profile
+    const MAX_VISIT_MS = 10 * 60 * 1000; // 10 min max per profile (per-post timeouts prevent internal freezes)
 
     function cleanup() {
       clearTimeout(timeoutId);
@@ -366,7 +379,7 @@ async function visitSingleProfile(url, influencer) {
       cleanup();
       _profileVisitResolve = null;
       if (tabId) chrome.tabs.remove(tabId).catch(() => {});
-      reject(new Error('Profile visit timed out (15 min)'));
+      reject(new Error('Profile visit timed out (10 min)'));
     }, MAX_VISIT_MS);
 
     try {
@@ -403,16 +416,19 @@ async function visitSingleProfile(url, influencer) {
         originalResolve(result);
       };
 
-      // Wait for tab to finish loading
-      await new Promise((res) => {
-        function onUpdated(id, info) {
-          if (id === tabId && info.status === 'complete') {
-            chrome.tabs.onUpdated.removeListener(onUpdated);
-            res();
+      // Wait for tab to finish loading (30s timeout in case LinkedIn stalls)
+      await Promise.race([
+        new Promise((res) => {
+          function onUpdated(id, info) {
+            if (id === tabId && info.status === 'complete') {
+              chrome.tabs.onUpdated.removeListener(onUpdated);
+              res();
+            }
           }
-        }
-        chrome.tabs.onUpdated.addListener(onUpdated);
-      });
+          chrome.tabs.onUpdated.addListener(onUpdated);
+        }),
+        new Promise(res => setTimeout(res, 30000)),
+      ]);
 
       // Extra wait for LinkedIn SPA to render
       await new Promise(r => setTimeout(r, 3000));
@@ -632,6 +648,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   } else if (message.action === "getProfileVisitStatus") {
     sendResponse({ running: _profileVisitRunning, progress: _profileVisitProgress });
+
+  // ── Server API Proxy ────────────────────────────────────────────────────
+  // Content scripts on HTTPS pages cannot fetch HTTP localhost (mixed content).
+  // Route all server API calls through the background service worker.
+  } else if (message.action === "serverApiProxy") {
+    const { method, url, headers, body } = message;
+    (async () => {
+      try {
+        const opts = { method, headers: headers || {} };
+        if (body && method !== 'GET') {
+          opts.body = typeof body === 'string' ? body : JSON.stringify(body);
+        }
+        const response = await fetch(url, opts);
+        const text = await response.text();
+        sendResponse({
+          ok: response.ok,
+          status: response.status,
+          body: text,
+        });
+      } catch (err) {
+        sendResponse({
+          ok: false,
+          status: 0,
+          body: null,
+          error: err.message,
+        });
+      }
+    })();
+    return true; // async
   }
 });
 
@@ -675,3 +720,14 @@ chrome.storage.local.get(["applicationStats", "jobKeywords"], (data) => {
 
 // Also set up alarms on service worker wake-up (covers restart after idle)
 setupInfluencerAlarms();
+
+// Server batch upload alarm — always active
+chrome.alarms.get(SERVER_BATCH_ALARM).then(existing => {
+  if (!existing) {
+    chrome.alarms.create(SERVER_BATCH_ALARM, {
+      delayInMinutes: 2,
+      periodInMinutes: SERVER_BATCH_INTERVAL_MIN,
+    });
+    console.log(`[Background] Created server batch upload alarm (every ${SERVER_BATCH_INTERVAL_MIN}m)`);
+  }
+});

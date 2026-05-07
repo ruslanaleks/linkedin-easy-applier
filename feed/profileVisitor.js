@@ -31,8 +31,20 @@
   const delay = ms => new Promise(r => setTimeout(r, ms));
   const randomDelay = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 
+  /** Race a promise against a timeout — returns fallback on timeout instead of throwing */
+  function withTimeout(promise, ms, fallback = null) {
+    let timer;
+    const timeout = new Promise(resolve => {
+      timer = setTimeout(() => {
+        WARN(`Operation timed out after ${Math.round(ms / 1000)}s`);
+        resolve(fallback);
+      }, ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  }
+
   function sendToBackground(msg) {
-    return new Promise((resolve, reject) => {
+    const p = new Promise((resolve, reject) => {
       try {
         chrome.runtime.sendMessage(msg, resp => {
           if (chrome.runtime.lastError) {
@@ -45,6 +57,31 @@
         reject(err);
       }
     });
+    // 30s timeout — prevents hanging if background SW restarted or relay chain stalls
+    return withTimeout(p, 30000);
+  }
+
+  // ── Dismiss overlays / leftover comment composers ────────────────────────
+
+  function dismissOverlays() {
+    // Close any open modal/dialog (e.g. reaction picker, "discard comment?" prompt)
+    const modals = safeQuerySelectorAll(document, '[role="dialog"] button[aria-label*="Dismiss" i], [role="dialog"] button[aria-label*="Close" i], [role="dialog"] button[aria-label*="Cerrar" i], [role="dialog"] button[aria-label*="Закрыть" i], .artdeco-modal__dismiss');
+    for (const btn of modals) {
+      try { btn.click(); } catch {}
+    }
+
+    // Blur any focused contenteditable (collapses LinkedIn's inline comment composer)
+    if (document.activeElement) {
+      const ce = document.activeElement.getAttribute?.('contenteditable');
+      if (ce === 'true' || ce === 'plaintext-only') {
+        try { document.activeElement.blur(); } catch {}
+      }
+    }
+
+    // Press Escape to dismiss reaction pickers / tooltips
+    try {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+    } catch {}
   }
 
   // ── Wait for page to fully load ─────────────────────────────────────────
@@ -741,19 +778,23 @@
 
   async function requestAIComment(post) {
     try {
-      const resp = await sendToBackground({
-        action: 'profileVisitorGenerateComment',
-        post: {
-          author: post.author,
-          headline: post.headline,
-          content: (post.content || '').slice(0, 2000),
-          hashtags: post.hashtags,
-          hasMedia: post.hasMedia,
-          reactions: post.reactions,
-          comments: post.comments,
-          timestamp: post.timestamp,
-        },
-      });
+      const resp = await withTimeout(
+        sendToBackground({
+          action: 'profileVisitorGenerateComment',
+          post: {
+            author: post.author,
+            headline: post.headline,
+            content: (post.content || '').slice(0, 2000),
+            hashtags: post.hashtags,
+            hasMedia: post.hasMedia,
+            reactions: post.reactions,
+            comments: post.comments,
+            timestamp: post.timestamp,
+          },
+        }),
+        60000, // 60s total timeout for AI generation (API has its own 15s + retries)
+        null,
+      );
       return resp?.comment || null;
     } catch (err) {
       WARN('AI comment request failed:', err.message);
@@ -795,10 +836,24 @@
     postEls = queryPosts();
     LOG(`After scrolling: ${postEls.length} posts`);
 
+    // 2b. Deduplicate DOM elements — remove nested elements (parent+child both matching selectors)
+    const uniqueEls = postEls.filter((el, i) => {
+      for (let j = 0; j < postEls.length; j++) {
+        if (i !== j && postEls[j].contains(el) && postEls[j] !== el) {
+          return false; // el is a child of another matched element — skip the child
+        }
+      }
+      return true;
+    });
+    if (uniqueEls.length < postEls.length) {
+      LOG(`Deduped DOM elements: ${postEls.length} → ${uniqueEls.length} (removed ${postEls.length - uniqueEls.length} nested)`);
+    }
+
     // 3. Parse posts — keep all that have social action buttons or meaningful content
     const allPosts = [];
+    const seenIds = new Set();
     let filteredCount = 0;
-    for (const el of postEls) {
+    for (const el of uniqueEls) {
       const post = parsePostElement(el);
 
       // Only filter out truly empty elements (no content, no media, no buttons)
@@ -811,6 +866,13 @@
         filteredCount++;
         continue;
       }
+
+      // Deduplicate by post ID (same data-urn matched via different selector strategies)
+      if (seenIds.has(post.id)) {
+        filteredCount++;
+        continue;
+      }
+      seenIds.add(post.id);
 
       post._el = el;
       allPosts.push(post);
@@ -861,6 +923,7 @@
     // 5. Engage with each weekly post: LIKE then COMMENT, 20-30s cooldown
     //    Max 5 posts per profile to stay within timeout and avoid spam detection
     const MAX_POSTS_PER_VISIT = 5;
+    const POST_TIMEOUT_MS = 120000; // 2 min max per post — prevents one stuck post from freezing the run
     const postsToEngage = weeklyPosts.slice(0, MAX_POSTS_PER_VISIT);
     LOG(`Will engage with up to ${postsToEngage.length} posts (max ${MAX_POSTS_PER_VISIT})`);
 
@@ -878,50 +941,66 @@
 
       LOG(`\n── Engaging post ${idx + 1}/${postsToEngage.length}: "${post.author}" id=${post.id.slice(0, 30)} ──`);
 
-      // Scroll post into view
-      post._el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      await delay(randomDelay(2000, 3000));
+      // Wrap entire post engagement in a timeout so one stuck post can't freeze the run
+      const engageResult = await withTimeout((async () => {
+        // Dismiss any leftover dialogs/overlays from previous post
+        dismissOverlays();
 
-      // ── LIKE ──
-      try {
-        const liked = await likePost(post._el);
-        postResult.liked = liked;
-        if (liked) results.liked++;
-        LOG(`Like result: ${liked}`);
-      } catch (err) {
-        WARN('Like failed:', err.message);
-        results.errors++;
-      }
+        // Scroll post into view
+        post._el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        await delay(randomDelay(2000, 3000));
 
-      // Pause between like and comment
-      const likeToComment = randomDelay(8000, 12000);
-      LOG(`Waiting ${Math.round(likeToComment / 1000)}s before commenting...`);
-      await delay(likeToComment);
-
-      // ── COMMENT ──
-      try {
-        LOG('Requesting AI comment...');
-        const comment = await requestAIComment(post);
-        if (comment) {
-          LOG(`AI comment (${comment.length} chars): "${comment.slice(0, 80)}..."`);
-          const commented = await commentOnPost(post._el, comment);
-          postResult.commented = commented;
-          if (commented) results.commented++;
-          LOG(`Comment result: ${commented}`);
-        } else {
-          LOG('No AI comment generated (check if feed tab is open with feedAI loaded)');
+        // ── LIKE ──
+        try {
+          const liked = await likePost(post._el);
+          postResult.liked = liked;
+          if (liked) results.liked++;
+          LOG(`Like result: ${liked}`);
+        } catch (err) {
+          WARN('Like failed:', err.message);
+          results.errors++;
         }
-      } catch (err) {
-        WARN('Comment failed:', err.message);
+
+        // Pause between like and comment
+        const likeToComment = randomDelay(8000, 12000);
+        LOG(`Waiting ${Math.round(likeToComment / 1000)}s before commenting...`);
+        await delay(likeToComment);
+
+        // ── COMMENT ──
+        try {
+          LOG('Requesting AI comment...');
+          const comment = await requestAIComment(post);
+          if (comment) {
+            LOG(`AI comment (${comment.length} chars): "${comment.slice(0, 80)}..."`);
+            const commented = await commentOnPost(post._el, comment);
+            postResult.commented = commented;
+            if (commented) results.commented++;
+            LOG(`Comment result: ${commented}`);
+          } else {
+            LOG('No AI comment generated (check if feed tab is open with feedAI loaded)');
+          }
+        } catch (err) {
+          WARN('Comment failed:', err.message);
+          results.errors++;
+        }
+
+        return 'done';
+      })(), POST_TIMEOUT_MS, 'timeout');
+
+      if (engageResult === 'timeout') {
+        WARN(`Post ${idx + 1} timed out after ${POST_TIMEOUT_MS / 1000}s, moving on`);
         results.errors++;
       }
 
-      // Mark engaged only if something worked
+      // Mark engaged only if something worked (even on timeout — avoid re-engaging a stuck post)
       if (postResult.liked || postResult.commented) {
         engagedPostIds.add(post.id);
         LOG(`Marked as engaged: ${post.id.slice(0, 30)}`);
       }
       results.posts.push(postResult);
+
+      // ── Cleanup: collapse open comment composers before next post ──
+      dismissOverlays();
 
       // ── 20-30s COOLDOWN before next post ──
       if (idx < postsToEngage.length - 1) {
