@@ -29,3 +29,6 @@ npm-debug.log*
 *.crx
 *.pem
 *.zip
+
+# Server (tracked in separate repo)
+server/
