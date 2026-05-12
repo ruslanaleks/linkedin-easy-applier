@@ -33,7 +33,7 @@ actions.js → ui.js → content.js
 
 **Feed bundle** — runs on `/feed`, `/feed/*`, `/`:
 ```
-utils.js → feed/feedScraper.js → feed/feedEngagement.js → feed/feedAI.js → feed/feedUI.js → feed/feedContent.js
+utils.js → feed/feedScraper.js → feed/feedEngagement.js → feed/feedAI.js → feed/feedImageGen.js → feed/feedUI.js → feed/feedContent.js
 ```
 
 Script order matters — later scripts depend on objects registered by earlier ones.
@@ -62,6 +62,7 @@ All modules share state through `window.linkedInAutoApply`. Key properties:
 - **feedScraper.js** — scrapes posts from the feed DOM using `data-testid`, `aria-label`, and text patterns (LinkedIn obfuscates CSS classes). Includes caching and hiring-signal detection (EN/ES)
 - **feedEngagement.js** — auto-likes/comments/follows with rate limiting, human-like random delays, and daily/hourly safety caps
 - **feedAI.js** — generates comments via LLM API (Qwen/Grok). Supports multiple providers: DashScope, OpenRouter, xAI, local (Ollama). Settings stored in `chrome.storage.local` under `feedAISettings`
+- **feedImageGen.js** — AI image generation for posts. Supports xAI (grok-2-image) and OpenAI (dall-e-3). Two-step pipeline: LLM creates image prompt from post text, then image API generates the visual. Settings in `feedImageGenSettings`, can reuse feedAI API key
 - **feedUI.js** — floating buttons (Analyze Feed, Auto Engage, Feed Settings) and panels with progress bars
 - **feedContent.js** — entry point; checks module availability, loads settings, creates UI, handles SPA navigation via MutationObserver
 
@@ -71,7 +72,7 @@ Handles messages from content scripts: `applicationSent`, `getStats`, `updateKey
 
 ### Settings / storage
 
-All user settings live in `chrome.storage.local`. The settings UI is built programmatically in `ui.js` (jobs) and `feed/feedUI.js` (feed). Key stored keys: `jobKeywords`, `phoneNumber`, `englishLevel`, `awsExperience`, `awsYearsExperience`, `javaYearsExperience`, `languages`, `userProfile`, `hispanicOption`, `authorizedToWorkInSpain`, `preferredLocation`, `feedAISettings`, `applicationStats`.
+All user settings live in `chrome.storage.local`. The settings UI is built programmatically in `ui.js` (jobs) and `feed/feedUI.js` (feed). Key stored keys: `jobKeywords`, `phoneNumber`, `englishLevel`, `awsExperience`, `awsYearsExperience`, `javaYearsExperience`, `languages`, `userProfile`, `hispanicOption`, `authorizedToWorkInSpain`, `preferredLocation`, `feedAISettings`, `feedImageGenSettings`, `applicationStats`.
 
 ## Key Patterns
 

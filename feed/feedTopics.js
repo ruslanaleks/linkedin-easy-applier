@@ -71,6 +71,8 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       #feed-topics-panel[data-theme="dark"] .variant-card { background: #2d333b !important; border-color: #444 !important; }
       #feed-topics-panel[data-theme="dark"] .draft-card { background: #2d333b !important; }
       #feed-topics-panel[data-theme="dark"] .btn-secondary { background: #444 !important; color: #e6e6e6 !important; }
+      #feed-topics-panel[data-theme="dark"] .img-gen-settings { background: #2d333b !important; border-color: #444 !important; }
+      #feed-topics-panel[data-theme="dark"] .img-preview-container { background: #2d333b !important; border-color: #444 !important; }
     `;
     document.head.appendChild(style);
   }
@@ -539,6 +541,51 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
           style="width:100%;padding:8px 12px;border:1px solid #ccc;border-radius:4px;font-size:13px;resize:vertical;box-sizing:border-box;"></textarea>
       </div>
 
+      <div class="img-gen-settings" style="margin-bottom:16px;padding:12px;background:#f8f5fc;border:1px solid #e0d4f0;border-radius:6px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <label style="font-size:13px;font-weight:600;">Image Generation</label>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;">
+            <input type="checkbox" id="img-gen-enabled" /> Enable
+          </label>
+        </div>
+        <div id="img-gen-options" style="display:none;">
+          <div style="display:flex;gap:10px;margin-bottom:8px;">
+            <div style="flex:1;">
+              <label style="display:block;margin-bottom:3px;font-size:11px;color:#666;">Provider</label>
+              <select id="img-gen-provider" style="width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px;">
+                <option value="xai">xAI (Grok)</option>
+                <option value="openai">OpenAI (DALL-E 3)</option>
+              </select>
+            </div>
+            <div style="flex:1;">
+              <label style="display:block;margin-bottom:3px;font-size:11px;color:#666;">Style</label>
+              <select id="img-gen-style" style="width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px;">
+                <option value="professional">Professional</option>
+                <option value="creative">Creative</option>
+                <option value="minimalist">Minimalist</option>
+                <option value="infographic">Infographic</option>
+                <option value="photorealistic">Photorealistic</option>
+              </select>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <div style="flex:1;">
+              <label style="display:block;margin-bottom:3px;font-size:11px;color:#666;">Size</label>
+              <select id="img-gen-size" style="width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px;">
+                <option value="1024x1024">Square (1024x1024)</option>
+                <option value="1024x1536">Portrait (1024x1536)</option>
+                <option value="1536x1024">Landscape (1536x1024)</option>
+              </select>
+            </div>
+            <div style="flex:1;">
+              <label style="display:block;margin-bottom:3px;font-size:11px;color:#666;">API Key (blank = reuse AI key)</label>
+              <input id="img-gen-api-key" type="password" placeholder="Optional"
+                style="width:100%;padding:6px 8px;border:1px solid #ccc;border-radius:4px;font-size:12px;box-sizing:border-box;" />
+            </div>
+          </div>
+        </div>
+      </div>
+
       <button id="gen-submit-btn" style="width:100%;padding:12px;background:#6a1b9a;color:#fff;border:none;border-radius:4px;font-size:14px;font-weight:600;cursor:pointer;">
         Generate Post
       </button>
@@ -555,6 +602,48 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         slider.addEventListener('input', () => { val.textContent = slider.value; });
       }
     });
+
+    // Wire up image generation settings
+    const imgToggle = document.getElementById('img-gen-enabled');
+    const imgOptions = document.getElementById('img-gen-options');
+    if (imgToggle && imgOptions) {
+      // Load saved image gen settings
+      const imgGen = window.linkedInAutoApply.feedImageGen;
+      if (imgGen) {
+        imgGen.loadSettings().then(imgSettings => {
+          const providerSel = document.getElementById('img-gen-provider');
+          const styleSel = document.getElementById('img-gen-style');
+          const sizeSel = document.getElementById('img-gen-size');
+          const apiKeyInput = document.getElementById('img-gen-api-key');
+          if (providerSel) providerSel.value = imgSettings.provider || 'xai';
+          if (styleSel) styleSel.value = imgSettings.style || 'professional';
+          if (sizeSel) sizeSel.value = imgSettings.size || '1024x1024';
+          if (apiKeyInput && imgSettings.apiKey) apiKeyInput.value = imgSettings.apiKey;
+        });
+      }
+
+      imgToggle.addEventListener('change', () => {
+        imgOptions.style.display = imgToggle.checked ? 'block' : 'none';
+      });
+
+      // Save image settings on change
+      ['img-gen-provider', 'img-gen-style', 'img-gen-size', 'img-gen-api-key'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.addEventListener('change', () => {
+            if (imgGen) {
+              imgGen.saveSettings({
+                provider: document.getElementById('img-gen-provider')?.value || 'xai',
+                style: document.getElementById('img-gen-style')?.value || 'professional',
+                size: document.getElementById('img-gen-size')?.value || '1024x1024',
+                apiKey: document.getElementById('img-gen-api-key')?.value || '',
+                reuseAIKey: !document.getElementById('img-gen-api-key')?.value,
+              });
+            }
+          });
+        }
+      });
+    }
 
     // Generate button
     container.querySelector('#gen-submit-btn').addEventListener('click', handleGenerate);
@@ -635,9 +724,18 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       card.innerHTML = `
         <div style="font-size:11px;font-weight:600;color:#6a1b9a;margin-bottom:8px;">Variant ${idx + 1}</div>
         <div class="variant-text" style="font-size:13px;line-height:1.6;white-space:pre-wrap;margin-bottom:12px;">${escapeHtml(typeof text === 'string' ? text : text)}</div>
+        <div class="img-preview-container" data-variant-idx="${idx}" style="display:none;margin-bottom:12px;padding:10px;background:#f8f9fa;border:1px solid #e0e0e0;border-radius:6px;">
+          <div class="img-gen-status" style="font-size:12px;color:#666;margin-bottom:8px;"></div>
+          <div class="img-preview" style="text-align:center;"></div>
+          <div class="img-prompt-display" style="display:none;margin-top:8px;padding:8px;background:#fff;border:1px solid #eee;border-radius:4px;font-size:11px;color:#666;max-height:60px;overflow-y:auto;"></div>
+          <div class="img-actions" style="display:none;margin-top:8px;gap:6px;flex-wrap:wrap;"></div>
+        </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;">
           <button class="var-copy" style="padding:6px 12px;background:#6a1b9a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">
             Copy
+          </button>
+          <button class="var-gen-image" style="padding:6px 12px;background:#1565c0;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">
+            Generate Image
           </button>
           <button class="var-accept" style="padding:6px 12px;background:#2e7d32;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;">
             Accept as Draft
@@ -657,6 +755,11 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
         } catch (err) {
           console.warn('[FeedTopics] Copy failed:', err);
         }
+      });
+
+      // Generate Image button
+      card.querySelector('.var-gen-image').addEventListener('click', () => {
+        handleImageGeneration(card, typeof text === 'string' ? text : '', idx);
       });
 
       // Accept as draft (already saved on server, just confirm)
@@ -782,6 +885,136 @@ window.linkedInAutoApply = window.linkedInAutoApply || {};
       case 'published': return '#2e7d32';
       case 'discarded': return '#999';
       default: return '#666';
+    }
+  }
+
+  // ── Image Generation Handler ─────────────────────────────────────────
+
+  async function handleImageGeneration(card, postText, variantIdx) {
+    const imgGen = window.linkedInAutoApply.feedImageGen;
+    if (!imgGen) {
+      console.error('[FeedTopics] feedImageGen module not loaded');
+      return;
+    }
+
+    const container = card.querySelector('.img-preview-container');
+    const statusEl = card.querySelector('.img-gen-status');
+    const previewEl = card.querySelector('.img-preview');
+    const promptEl = card.querySelector('.img-prompt-display');
+    const actionsEl = card.querySelector('.img-actions');
+    const genBtn = card.querySelector('.var-gen-image');
+
+    if (!container || !statusEl || !previewEl) return;
+
+    // Show container and set loading state
+    container.style.display = 'block';
+    statusEl.textContent = 'Generating image prompt from post text...';
+    statusEl.style.color = '#666';
+    previewEl.innerHTML = '';
+    promptEl.style.display = 'none';
+    actionsEl.style.display = 'none';
+    genBtn.disabled = true;
+    genBtn.textContent = 'Generating...';
+    genBtn.style.background = '#999';
+
+    // Read current settings from UI
+    const style = document.getElementById('img-gen-style')?.value || 'professional';
+    const size = document.getElementById('img-gen-size')?.value || '1024x1024';
+
+    try {
+      // Step 1: Generate prompt
+      statusEl.textContent = 'Creating image prompt from post...';
+      const imagePrompt = await imgGen.generateImagePrompt(postText, style);
+
+      // Show the prompt
+      promptEl.textContent = 'Prompt: ' + imagePrompt;
+      promptEl.style.display = 'block';
+
+      // Step 2: Generate image
+      statusEl.textContent = 'Generating image... This may take 30-60 seconds.';
+      const result = await imgGen.generateImage(imagePrompt, { size });
+
+      // Display the image
+      if (result.url) {
+        previewEl.innerHTML = '';
+        const img = document.createElement('img');
+        img.src = result.url;
+        img.alt = 'Generated image for LinkedIn post';
+        img.style.cssText = 'max-width:100%;max-height:400px;border-radius:6px;box-shadow:0 2px 8px rgba(0,0,0,0.15);';
+        img.onerror = () => {
+          previewEl.innerHTML = '<div style="color:#d32f2f;padding:10px;">Failed to load image. The URL may have expired.</div>';
+        };
+        previewEl.appendChild(img);
+
+        // Update prompt display with revised prompt if different
+        if (result.revisedPrompt && result.revisedPrompt !== imagePrompt) {
+          promptEl.textContent = 'Revised prompt: ' + result.revisedPrompt;
+        }
+
+        // Show action buttons
+        actionsEl.style.display = 'flex';
+        actionsEl.innerHTML = `
+          <button class="img-download" style="padding:5px 10px;background:#1565c0;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;">
+            Download
+          </button>
+          <button class="img-copy-url" style="padding:5px 10px;background:#6a1b9a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;">
+            Copy URL
+          </button>
+          <button class="img-regenerate" style="padding:5px 10px;background:#ff9800;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;">
+            Regenerate
+          </button>
+          <button class="img-copy-prompt" style="padding:5px 10px;background:#555;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;">
+            Copy Prompt
+          </button>
+        `;
+
+        // Download handler
+        actionsEl.querySelector('.img-download').addEventListener('click', () => {
+          const filename = 'linkedin-post-' + (variantIdx + 1) + '-' + Date.now() + '.png';
+          imgGen.downloadImage(result.url, filename);
+        });
+
+        // Copy URL handler
+        actionsEl.querySelector('.img-copy-url').addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(result.url);
+            actionsEl.querySelector('.img-copy-url').textContent = 'Copied!';
+            setTimeout(() => { actionsEl.querySelector('.img-copy-url').textContent = 'Copy URL'; }, 2000);
+          } catch (err) {
+            console.warn('[FeedTopics] Copy URL failed:', err);
+          }
+        });
+
+        // Regenerate handler
+        actionsEl.querySelector('.img-regenerate').addEventListener('click', () => {
+          handleImageGeneration(card, postText, variantIdx);
+        });
+
+        // Copy Prompt handler
+        actionsEl.querySelector('.img-copy-prompt').addEventListener('click', async () => {
+          try {
+            await navigator.clipboard.writeText(result.revisedPrompt || imagePrompt);
+            actionsEl.querySelector('.img-copy-prompt').textContent = 'Copied!';
+            setTimeout(() => { actionsEl.querySelector('.img-copy-prompt').textContent = 'Copy Prompt'; }, 2000);
+          } catch (err) {
+            console.warn('[FeedTopics] Copy prompt failed:', err);
+          }
+        });
+
+        statusEl.textContent = 'Image generated successfully!';
+        statusEl.style.color = '#2e7d32';
+      } else {
+        statusEl.textContent = 'No image URL returned from API.';
+        statusEl.style.color = '#d32f2f';
+      }
+    } catch (err) {
+      console.error('[FeedTopics] Image generation failed:', err);
+      statusEl.textContent = 'Image generation failed: ' + err.message;
+      statusEl.style.color = '#d32f2f';
+    } finally {
+      genBtn.disabled = false;
+      genBtn.textContent = 'Generate Image';
+      genBtn.style.background = '#1565c0';
     }
   }
 
