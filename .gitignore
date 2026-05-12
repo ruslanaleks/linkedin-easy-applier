@@ -32,3 +32,6 @@ npm-debug.log*
 
 # Server (tracked in separate repo)
 server/
+
+# Business docs
+BUSINESS_TASK.md
