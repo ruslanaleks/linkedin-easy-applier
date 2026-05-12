@@ -35,3 +35,6 @@ server/
 
 # Business docs
 BUSINESS_TASK.md
+
+# Claude Code
+.claude/
